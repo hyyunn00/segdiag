@@ -290,7 +290,18 @@ def collect(
 
         for p_dir in pred_folders:
             model_name = extract_model_name(img_dir.name if img_dir else "", p_dir.name)
-            logger.info("Collecting: %s vs %s (model=%s)", gt_dir.name, p_dir.name, model_name)
+            # gt_dir.name/p_dir.name are just the shared subfolder basenames
+            # (e.g. "Flatten_561_mask") - identical across every sample that
+            # follows the same naming convention, so sample_name has to be
+            # included here or this line is indistinguishable between
+            # samples and looks like the same collect step repeating.
+            logger.info(
+                "Collecting: %s / %s vs %s (model=%s)",
+                sample_name,
+                gt_dir.name,
+                p_dir.name,
+                model_name,
+            )
 
             for z_index, gtf in enumerate(gt_files):
                 if gtf.name not in gt_arrays:
@@ -325,9 +336,10 @@ def collect(
 
                 if (z_index + 1) % 50 == 0:
                     logger.info(
-                        "  ...%d/%d slices matched for %s vs %s",
+                        "  ...%d/%d slices matched for %s / %s vs %s",
                         z_index + 1,
                         len(gt_files),
+                        sample_name,
                         gt_dir.name,
                         p_dir.name,
                     )
