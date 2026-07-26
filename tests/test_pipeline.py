@@ -227,6 +227,51 @@ def test_collect_model_filter_restricts_scan(tmp_path):
     assert instances_df.empty
 
 
+def _write_dataset_with_sibling_models(root) -> None:
+    """Two samples, each with a "v12_unet_baseline" model *and* a sibling
+    "v12_unet_baseline_dark" model whose name contains the first as a
+    substring - the exact scenario --model-exact needs to tell apart.
+    """
+    shape = (50, 80)
+    for sample in ("case01", "case02"):
+        sample_dir = root / sample
+        gt_dir = sample_dir / "Flatten_561_mask"
+        raw_dir = sample_dir / "Flatten_561"
+        gt_dir.mkdir(parents=True)
+        raw_dir.mkdir(parents=True)
+        gt0, pr0, raw0 = _synthetic_slice(shape)
+        tifffile.imwrite(gt_dir / "slice_0000.tif", gt0)
+        tifffile.imwrite(raw_dir / "slice_0000.tif", raw0)
+
+        for model_dir_name in (
+            "Flatten_561_v12_unet_baseline_mask.scroll-tif",
+            "Flatten_561_v12_unet_baseline_dark_mask.scroll-tif",
+        ):
+            pred_dir = sample_dir / model_dir_name
+            pred_dir.mkdir(parents=True)
+            tifffile.imwrite(pred_dir / "slice_0000.tif", pr0)
+
+
+def test_collect_model_exact_excludes_substring_sibling(tmp_path):
+    _write_dataset_with_sibling_models(tmp_path)
+
+    instances_df, _ = collect(tmp_path, model_exact="v12_unet_baseline")
+
+    assert set(instances_df["model"]) == {"v12_unet_baseline"}
+
+
+def test_collect_model_filter_substring_would_include_the_sibling(tmp_path):
+    """Sanity check that the scenario above is real: the existing substring
+    `model_filter` *does* pick up both models, which is exactly why
+    `model_exact` exists.
+    """
+    _write_dataset_with_sibling_models(tmp_path)
+
+    instances_df, _ = collect(tmp_path, model_filter="v12_unet_baseline")
+
+    assert set(instances_df["model"]) == {"v12_unet_baseline", "v12_unet_baseline_dark"}
+
+
 def test_collect_max_slices_caps_total_slices_scanned(tmp_path):
     _write_dataset(tmp_path)
 

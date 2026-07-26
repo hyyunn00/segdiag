@@ -94,3 +94,47 @@ def test_cli_run_all_produces_a_consolidated_html_report(tmp_path):
     assert result.exit_code == 0, result.output
     index_files = list(out_dir.glob("*__index.html"))
     assert len(index_files) == 1
+
+
+def test_cli_run_all_skips_opt_in_fn_visualize_by_default(tmp_path):
+    _write_dataset(tmp_path)
+    out_dir = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        ["run", "all", "--base-dir", str(tmp_path), "--output-dir", str(out_dir), "--format", "csv"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Running fn-visualize" not in result.output
+    assert list(out_dir.glob("*fn_sample_*")) == []
+
+
+def test_cli_run_fn_visualize_by_name_still_works(tmp_path):
+    """Opt-in checks stay fully runnable - they just don't ride along with
+    `all` - by naming them explicitly."""
+    _write_dataset(tmp_path)
+    out_dir = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "fn-visualize",
+            "--base-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(out_dir),
+            "--format",
+            "csv",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+
+def test_cli_list_checks_marks_opt_in_checks(tmp_path):
+    result = runner.invoke(app, ["list-checks"])
+    assert result.exit_code == 0
+    assert "fn-visualize" in result.stdout
+    assert "opt-in" in result.stdout

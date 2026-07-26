@@ -40,16 +40,21 @@ class ReportWriter(ABC):
         self, artifact: ReportArtifact, output_dir: Path, source_tag: Optional[str]
     ) -> Path:
         path = self._target_path(artifact, output_dir)
-        if not source_tag:
-            return path
-        return path.with_name(f"{source_tag}__{path.name}")
+        if source_tag:
+            path = path.with_name(f"{source_tag}__{path.name}")
+        # artifact.name may itself contain "/" (e.g. fn_visualization groups
+        # its per-sample galleries under "step2_fn_diagnosis_3d/...") to ask
+        # for a subfolder under output_dir - output_dir.mkdir() alone doesn't
+        # create that, so every writer needs the *resolved* parent created,
+        # not just the top-level output_dir.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
 
 
 class CsvWriter(ReportWriter):
     extension = ".csv"
 
     def write(self, artifact, output_dir, *, source_tag=None):
-        output_dir.mkdir(parents=True, exist_ok=True)
         path = self._tagged_target_path(artifact, output_dir, source_tag)
         artifact.table.to_csv(path, index=False)
         if artifact.figure is not None:
@@ -61,7 +66,6 @@ class ParquetWriter(ReportWriter):
     extension = ".parquet"
 
     def write(self, artifact, output_dir, *, source_tag=None):
-        output_dir.mkdir(parents=True, exist_ok=True)
         path = self._tagged_target_path(artifact, output_dir, source_tag)
         artifact.table.to_parquet(path, index=False)
         return path
@@ -83,7 +87,6 @@ class HtmlWriter(ReportWriter):
     extension = ".html"
 
     def write(self, artifact, output_dir, *, source_tag=None):
-        output_dir.mkdir(parents=True, exist_ok=True)
         path = self._tagged_target_path(artifact, output_dir, source_tag)
         path.write_text(self._render_page(artifact.name, [artifact]), encoding="utf-8")
         return path

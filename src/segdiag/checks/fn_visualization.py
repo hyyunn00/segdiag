@@ -20,11 +20,11 @@ import random
 from pathlib import Path
 from typing import List, Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tifffile
 
+from segdiag.checks._visualization import crop_with_padding, plot_zcontext_sample
 from segdiag.checks.base import Check
 from segdiag.core.io_utils import (
     extract_model_name,
@@ -40,66 +40,13 @@ from segdiag.core.reporting import log_scope
 logger = logging.getLogger(__name__)
 
 
-def _crop_with_padding(arr: np.ndarray, bbox, pad: int = 40) -> np.ndarray:
-    """Crop ``arr`` to ``bbox`` expanded by ``pad`` pixels of context on each side."""
-    min_row, min_col, max_row, max_col = bbox
-    h, w = arr.shape
-    r_start, r_end = max(0, min_row - pad), min(h, max_row + pad)
-    c_start, c_end = max(0, min_col - pad), min(w, max_col + pad)
-    return arr[r_start:r_end, c_start:c_end]
-
-
-def _normalize_for_display(arr: np.ndarray) -> np.ndarray:
-    """Rescale an intensity image to [0, 1] for matplotlib display."""
-    arr_float = arr.astype(np.float32)
-    min_v, max_v = arr_float.min(), arr_float.max()
-    if max_v - min_v > 1e-6:
-        return (arr_float - min_v) / (max_v - min_v)
-    return arr_float
-
-
-def _plot_context_sample(sample_data: dict, sample_id: int, z_name: str, model_name: str):
-    """Render the 4x5 grid for a single FN sample and return the figure."""
-    fig, axes = plt.subplots(4, 5, figsize=(20, 16))
-
-    modalities = ["raw", "dark", "gt", "pr"]
-    row_titles = ["Raw Image", "Dark Image", "Ground Truth", "Prediction"]
-    col_titles = ["Z - 2", "Z - 1", "Center (Z)", "Z + 1", "Z + 2"]
-
-    for r, mod in enumerate(modalities):
-        for c in range(5):
-            ax = axes[r, c]
-            img = sample_data[mod][c]
-
-            if mod in ("gt", "pr"):
-                ax.imshow(img > 0, cmap="gray", vmin=0, vmax=1)
-            else:
-                ax.imshow(_normalize_for_display(img), cmap="gray")
-
-            if mod == "gt" and c == 2:
-                h, w = img.shape
-                ax.plot([w // 2], [h // 2], "r+", markersize=25, markeredgewidth=3)
-
-            if r == 0:
-                ax.set_title(col_titles[c], fontsize=18, fontweight="bold")
-            if c == 0:
-                ax.set_ylabel(row_titles[r], fontsize=18, fontweight="bold")
-
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-    plt.tight_layout()
-    plt.suptitle(
-        f"FN Sample #{sample_id}  (Model: {model_name} | Center Slice: {z_name})",
-        fontsize=22,
-        y=1.02,
-    )
-    return fig
-
-
 class FnVisualizationCheck(Check):
     name = "fn-visualize"
     description = "Step 2: Visualize ghost/false-negative cells with 3D Z-context"
+    # Renders up to --num-samples (default 20) full 4x5 figures, each
+    # requiring its own raw/dark/gt/pred TIFF reads on top of collect()'s
+    # own pass - opt-in only, so `segdiag run all` stays fast by default.
+    default_enabled = False
 
     def run(
         self, instances: pd.DataFrame, quality: pd.DataFrame, args: argparse.Namespace
@@ -194,22 +141,27 @@ class FnVisualizationCheck(Check):
                         }
                         for s_raw, s_dark, s_gt, s_pr in slices_paths:
                             sample_data["raw"].append(
-                                _crop_with_padding(tifffile.imread(str(s_raw)), target_bbox, pad=40)
+                                crop_with_padding(tifffile.imread(str(s_raw)), target_bbox, pad=40)
                             )
                             sample_data["dark"].append(
-                                _crop_with_padding(
-                                    tifffile.imread(str(s_dark)), target_bbox, pad=40
-                                )
+                                crop_with_padding(tifffile.imread(str(s_dark)), target_bbox, pad=40)
                             )
                             sample_data["gt"].append(
-                                _crop_with_padding(tifffile.imread(str(s_gt)), target_bbox, pad=40)
+                                crop_with_padding(tifffile.imread(str(s_gt)), target_bbox, pad=40)
                             )
                             sample_data["pr"].append(
-                                _crop_with_padding(tifffile.imread(str(s_pr)), target_bbox, pad=40)
+                                crop_with_padding(tifffile.imread(str(s_pr)), target_bbox, pad=40)
                             )
 
                         sample_count += 1
-                        fig = _plot_context_sample(sample_data, sample_count, c_gt.name, model_name)
+                        fig = plot_zcontext_sample(
+                            sample_data,
+                            title=(
+                                f"FN Sample #{sample_count}  "
+                                f"(Model: {model_name} | Center Slice: {c_gt.name})"
+                            ),
+                            highlight_row="gt",
+                        )
 
                         table = pd.DataFrame(
                             [

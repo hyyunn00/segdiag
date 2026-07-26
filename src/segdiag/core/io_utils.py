@@ -59,6 +59,28 @@ def _matches_filter(name: str, filter_str: Optional[str]) -> bool:
     return any(term in name_lower for term in terms)
 
 
+def model_matches_exact(model_name: str, exact_filter: Optional[str]) -> bool:
+    """Return True if ``model_name`` (the already-*extracted* model/version
+    name - see :func:`extract_model_name`, not the raw prediction-folder
+    name) equals one of ``exact_filter``'s comma-separated terms exactly
+    (case-insensitive). ``None``/empty always matches.
+
+    This is deliberately a separate, stricter check from
+    ``model_filter``/``_matches_filter`` (substring match on the raw folder
+    name): a substring filter like ``--model v12_unet_baseline`` also picks
+    up any sibling model whose name happens to contain that string as a
+    substring (e.g. ``v12_unet_baseline_dark``), which is surprising when
+    every sample/case folder repeats the same naming convention. Exact
+    matching on the extracted model name avoids that.
+    """
+    if not exact_filter:
+        return True
+    terms = [t.strip().lower() for t in exact_filter.split(",") if t.strip()]
+    if not terms:
+        return True
+    return model_name.strip().lower() in terms
+
+
 def _is_pred_folder(p: Path) -> bool:
     name = p.name.strip()
     return any(name.endswith(suffix) for suffix in PRED_FOLDER_SUFFIXES)

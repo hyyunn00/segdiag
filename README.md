@@ -36,20 +36,37 @@ See [`docs/architecture.md`](docs/architecture.md) for the full write-up.
 
 ## Checks
 
-| Check | Question it answers |
-|---|---|
-| `iou-distribution` | Are missed cells "never detected" or "detected but poorly matched"? |
-| `fn-visualize` | What do the missed cells actually look like, in 3D context? |
-| `fn-characteristics` | Are missed/spurious cells systematically smaller, dimmer, or deeper (Z)? |
-| `detection-probability` | What's the empirical P(detected) curve vs. volume/intensity? |
-| `fn-contribution` | Which cell-size bucket drives the missed cells - and the false positives? |
-| `story-closure` | Combined volume x intensity interaction heatmap + final summary |
-| `raw-image-quality` *(new in 1.0)* | Is low recall a modeling problem, or is the raw image itself noisy/blurry/saturated? |
-| `gt-annotation-quality` *(new in 1.0)* | Does the GT itself have volume outliers, border-truncated cells, or density anomalies? |
-| `fp-root-cause` *(new in 1.0)* | Is a false positive noise, an over-segmentation split, or a genuine hallucination? |
+| Check | Question it answers | Runs in `run all`? |
+|---|---|---|
+| `iou-distribution` | Are missed cells "never detected" or "detected but poorly matched"? | Yes |
+| `fn-visualize` | What do the missed cells actually look like, in 3D context? | **Opt-in** |
+| `fn-characteristics` | Are missed/spurious cells systematically smaller, dimmer, or deeper (Z)? | Yes |
+| `detection-probability` | What's the empirical P(detected) curve vs. volume/intensity? | Yes |
+| `fn-contribution` | Which cell-size bucket drives the missed cells - and the false positives? | Yes |
+| `story-closure` | Combined volume x intensity interaction heatmap + final summary | Yes |
+| `raw-image-quality` *(new in 1.0)* | Is low recall a modeling problem, or is the raw image itself noisy/blurry/saturated? | Yes |
+| `gt-annotation-quality` *(new in 1.0)* | Does the GT itself have volume outliers, border-truncated cells, or density anomalies? | Yes |
+| `fp-root-cause` *(new in 1.0)* | Is a false positive noise, an over-segmentation split, or a genuine hallucination? | Yes |
+| `fp-visualize` *(new in 1.0)* | What do the spurious detections actually look like, in 3D context - especially hallucinations? | **Opt-in** |
 
-Run `segdiag list-checks` to see this list (with descriptions) at any time.
-Full details in [`docs/checks.md`](docs/checks.md).
+Run `segdiag list-checks` to see this list (with descriptions, and an
+`[opt-in, not run by 'all']` marker) at any time. Full details in
+[`docs/checks.md`](docs/checks.md).
+
+**Opt-in checks.** `fn-visualize` and `fp-visualize` each render up to
+`--num-samples` (default 20) full 4x5 Z-context figures, with their own
+raw/dark/gt/pred TIFF reads on top of `collect()`'s own pass - slow enough
+relative to the other (purely tabular) checks that `segdiag run all` skips
+them by default. Run them explicitly to opt in:
+
+```bash
+segdiag run fn-visualize --base-dir /path/to/dataset --output-dir /path/to/results
+segdiag run fp-visualize --base-dir /path/to/dataset --output-dir /path/to/results
+```
+
+`fp-visualize` prioritizes `hallucination_fp` samples (the most concerning
+`fp-root-cause` subtype - looks like a real cell, but isn't) over
+`boundary_split_fp`/`noise_fp` whenever `--num-samples` can't fit everything.
 
 ## Installation
 
@@ -71,7 +88,7 @@ triplets, using the **same dynamic discovery rules as the lab's production
 <base_dir>/
   .../<sample_name>/
     Flatten_561/                                  # raw microscopy images (*.tif / *.tiff)
-    Flatten_561_dark/                              # optional dark-sectioning images (fn-visualize only)
+    Flatten_561_dark/                              # optional dark-sectioning images (fn-visualize/fp-visualize only)
     Flatten_561_mask/                              # ground-truth instance masks
     Flatten_561_<model_name>_mask.scroll-tif(f)/    # model prediction masks (one folder per model)
 ```
@@ -102,6 +119,12 @@ segdiag run iou-distribution --base-dir /path/to/dataset
 
 # Scope to one sample/model, and pick output format(s)
 segdiag run all --base-dir /path/to/dataset --sample case01 --model v9 --format csv,html
+
+# --model is a substring match, so it can over-match a sibling model whose
+# name contains your term (e.g. "v12_unet_baseline" also matches a
+# "v12_unet_baseline_dark" folder). --model-exact matches the *extracted*
+# model name exactly instead:
+segdiag run all --base-dir /path/to/dataset --model-exact v12_unet_baseline
 ```
 
 `segdiag run --help` lists every option; `segdiag list-checks` lists every
@@ -109,7 +132,10 @@ registered check. `--sample`/`--model`/`--output-dir` work exactly as
 before: filter to one or more sample/model-version folders (comma-separated
 substrings), and consolidate every run's output into one folder with a
 `<dataset>__<sample-filter>__<model-filter>__` filename prefix so different
-scopes never collide.
+scopes never collide. `--model` and `--model-exact` can be combined - both
+must match, so a conflicting pair (e.g. a `--model` substring that excludes
+everything `--model-exact` was trying to select) silently yields zero
+matches rather than an error, so keep them consistent.
 
 > Coming from the pre-1.0 `segdiag <step-name> --base-dir ...` CLI? See
 > [`docs/migration.md`](docs/migration.md) for the full command mapping and
@@ -207,9 +233,10 @@ segdiag/
       writers.py                    # Csv/Parquet/HtmlWriter
       config.py                     # segdiag.toml loading
     checks/                      # pluggable checks (registry in __init__.py)
-      base.py
+      base.py                       # Check ABC + default_enabled (opt-in vs. `run all`)
+      _visualization.py             # shared 4x5 Z-context gallery rendering
       iou_distribution.py           # Step 1
-      fn_visualization.py           # Step 2 (still does its own TIFF I/O - see docs)
+      fn_visualization.py           # Step 2 (opt-in; still does its own TIFF I/O - see docs)
       fn_characteristics.py         # Step 3
       detection_probability.py      # Step 4
       fn_contribution.py            # Step 5
@@ -217,6 +244,7 @@ segdiag/
       raw_image_quality.py          # new in 1.0
       gt_annotation_quality.py      # new in 1.0
       fp_root_cause.py              # new in 1.0
+      fp_visualization.py           # new in 1.0 (opt-in; mirrors fn_visualization.py for FPs)
   tests/
     test_matching.py
     test_io_utils_and_reporting.py

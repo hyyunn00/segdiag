@@ -8,6 +8,7 @@ from segdiag.core.io_utils import (
     extract_model_name,
     find_gt_folders,
     find_pred_folders,
+    model_matches_exact,
     model_name_from_pred_dir,
     resolve_image_dir,
 )
@@ -62,6 +63,22 @@ def test_find_pred_folders_model_filter_restricts_to_match(tmp_path):
 def test_model_name_from_pred_dir_strips_suffix(tmp_path):
     pred_dir = tmp_path / "unet_v9.scroll-tiff"
     assert model_name_from_pred_dir(pred_dir) == "unet_v9"
+
+
+def test_model_matches_exact_no_filter_matches_everything():
+    assert model_matches_exact("v12_unet_baseline", None) is True
+
+
+def test_model_matches_exact_rejects_substring_sibling():
+    # Unlike the substring `--model` filter, an exact match on
+    # "v12_unet_baseline" must not also accept "v12_unet_baseline_dark".
+    assert model_matches_exact("v12_unet_baseline_dark", "v12_unet_baseline") is False
+    assert model_matches_exact("v12_unet_baseline", "v12_unet_baseline") is True
+
+
+def test_model_matches_exact_accepts_comma_separated_list_case_insensitive():
+    assert model_matches_exact("V12_Unet_Baseline", "v9,v12_unet_baseline") is True
+    assert model_matches_exact("v13_unet_baseline", "v9,v12_unet_baseline") is False
 
 
 def test_source_tag_reflects_filters(tmp_path):

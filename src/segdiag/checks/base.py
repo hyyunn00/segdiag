@@ -32,6 +32,16 @@ class Check(ABC):
     name: str
     description: str
 
+    #: Whether ``segdiag run all`` includes this check automatically.
+    #: ``False`` means the check is opt-in only - it still runs (and still
+    #: shows up in ``list-checks``) when named explicitly, e.g.
+    #: ``segdiag run fn-visualize --base-dir ...``, it just doesn't run as
+    #: part of ``all``. Use this for checks that are expensive/slow relative
+    #: to the tabular checks (e.g. ones that render and save a gallery of
+    #: figures) rather than something every "just run everything" call
+    #: should pay for by default.
+    default_enabled: bool = True
+
     @abstractmethod
     def run(
         self,

@@ -36,6 +36,7 @@ from segdiag.core.io_utils import (
     find_pred_folders,
     get_corresponding_file,
     list_tif_files,
+    model_matches_exact,
     resolve_image_dir,
 )
 from segdiag.core.matching import match_and_find_false_positives
@@ -180,6 +181,7 @@ def collect(
     raw_name: Optional[str] = None,
     sample_filter: Optional[str] = None,
     model_filter: Optional[str] = None,
+    model_exact: Optional[str] = None,
     max_slices: Optional[int] = None,
     cache_path: Optional[Path] = None,
     force_refresh: bool = False,
@@ -196,6 +198,15 @@ def collect(
     ``mask_name``/``raw_name`` mirror ``find_gt_folders``/
     ``resolve_image_dir``'s own defaults: ``None`` uses the same
     ``analysis.py``-aligned auto-detection every step already relies on.
+
+    ``model_filter`` is a case-insensitive *substring* match against the raw
+    prediction-folder name (kept for backward compatibility). ``model_exact``
+    is a stricter, comma-separated *exact* match against the already-
+    extracted model name (see ``extract_model_name``) - use it when
+    ``model_filter`` would also catch an unwanted sibling model whose name
+    contains your term as a substring (e.g. ``model_exact="v12_unet_baseline"``
+    won't also match a ``v12_unet_baseline_dark`` folder in another sample).
+    Both filters apply together (AND) when both are given.
 
     ``max_slices`` caps the total number of (sample, slice) pairs read
     across the *entire* scan (unlimited by default). The pre-1.0 steps each
@@ -290,6 +301,8 @@ def collect(
 
         for p_dir in pred_folders:
             model_name = extract_model_name(img_dir.name if img_dir else "", p_dir.name)
+            if not model_matches_exact(model_name, model_exact):
+                continue
             # gt_dir.name/p_dir.name are just the shared subfolder basenames
             # (e.g. "Flatten_561_mask") - identical across every sample that
             # follows the same naming convention, so sample_name has to be

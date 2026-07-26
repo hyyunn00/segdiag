@@ -17,6 +17,7 @@ from segdiag.checks.fn_characteristics import FnCharacteristicsCheck
 from segdiag.checks.fn_contribution import FnContributionCheck
 from segdiag.checks.fn_visualization import FnVisualizationCheck
 from segdiag.checks.fp_root_cause import FpRootCauseCheck
+from segdiag.checks.fp_visualization import FpVisualizationCheck
 from segdiag.checks.gt_annotation_quality import GtAnnotationQualityCheck
 from segdiag.checks.iou_distribution import IouDistributionCheck
 from segdiag.checks.raw_image_quality import RawImageQualityCheck
@@ -34,5 +35,6 @@ CHECKS: Dict[str, Check] = {
         RawImageQualityCheck(),
         GtAnnotationQualityCheck(),
         FpRootCauseCheck(),
+        FpVisualizationCheck(),
     ]
 }

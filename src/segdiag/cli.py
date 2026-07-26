@@ -55,6 +55,15 @@ def run(
     model: Optional[str] = typer.Option(
         None, "--model", help="只評估模型/版本預測資料夾名稱包含此字串的資料，可用逗號分隔多個版本"
     ),
+    model_exact: Optional[str] = typer.Option(
+        None,
+        "--model-exact",
+        help=(
+            "只評估模型/版本名稱完全等於此字串的資料（逗號分隔可指定多個），"
+            "避免 --model 用子字串比對時誤抓到同前綴的其他模型"
+            "（例如指定 v12_unet_baseline 卻連 v12_unet_baseline_dark 也一起選進來）"
+        ),
+    ),
     mask_name: Optional[str] = typer.Option(
         None, "--mask-name", help="GT mask 資料夾名稱（預設自動偵測 *_mask）"
     ),
@@ -106,12 +115,17 @@ def run(
         argparse.Namespace(output_dir=str(effective_output_dir) if effective_output_dir else None),
         root,
     )
-    tag = source_tag(root, sample, model)
+    # Fold model_exact into the tag input too (not just `model`) so two runs
+    # that only differ by --model-exact don't collide on the same cache/
+    # output filenames.
+    model_tag_input = ",".join(t for t in (model, model_exact) if t) or None
+    tag = source_tag(root, sample, model_tag_input)
 
     logger.info(
-        "Scope for this run: sample filter=%s | model filter=%s | output-dir=%s",
+        "Scope for this run: sample filter=%s | model filter=%s | model exact=%s | output-dir=%s",
         sample or "(全部)",
         model or "(全部)",
+        model_exact or "(全部)",
         out_dir,
     )
 
@@ -121,6 +135,7 @@ def run(
         raw_name=effective_raw_name,
         sample_filter=sample,
         model_filter=model,
+        model_exact=model_exact,
         max_slices=max_slices,
         cache_path=out_dir / f"{tag}__collect_cache",
         force_refresh=refresh_cache,
@@ -130,6 +145,7 @@ def run(
         root=root,
         sample=sample,
         model=model,
+        model_exact=model_exact,
         output_dir=out_dir,
         mask_name=effective_mask_name,
         raw_name=effective_raw_name,
@@ -137,7 +153,18 @@ def run(
         num_samples=num_samples,
     )
 
-    checks_to_run = list(CHECKS.values()) if check == "all" else [CHECKS[check]]
+    if check == "all":
+        checks_to_run = [c for c in CHECKS.values() if c.default_enabled]
+        skipped = [c.name for c in CHECKS.values() if not c.default_enabled]
+        if skipped:
+            logger.info(
+                "Skipping opt-in check(s) not included in 'all': %s "
+                "(run e.g. `segdiag run %s --base-dir ...` to include one explicitly)",
+                ", ".join(skipped),
+                skipped[0],
+            )
+    else:
+        checks_to_run = [CHECKS[check]]
     formats = [f.strip() for f in effective_format.split(",") if f.strip()]
 
     all_artifacts = []
@@ -168,7 +195,8 @@ def run(
 def list_checks() -> None:
     """List every available check name and description."""
     for name, c in sorted(CHECKS.items()):
-        typer.echo(f"{name}: {c.description}")
+        suffix = "" if c.default_enabled else " [opt-in, not run by `all`]"
+        typer.echo(f"{name}: {c.description}{suffix}")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
