@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
+from scipy import ndimage
 from skimage.measure import label, regionprops
 
 #: IoU threshold at/above which a prediction claims a GT instance as a
@@ -145,6 +146,16 @@ def _one_to_one_match(
     maps ``gt_id -> pr_id`` for every claimed pair - callers that need the
     pairing (not just membership) can read it straight off this single pass
     instead of re-running the algorithm a second time.
+
+    Every mask/overlap computation below is restricted to a prediction
+    instance's own bounding box (via ``scipy.ndimage.find_objects``, one
+    ``O(N)`` pass) rather than indexing the full ``gt_labels``/``pr_labels``
+    arrays per instance - since a match can only ever occur inside that
+    prediction's own extent, this gives identical results at a fraction of
+    the cost once ``label_arr`` is a whole stacked 3D volume instead of one
+    2D slice (an ``== pr_id`` scan over the *entire* volume, repeated once
+    per prediction, is what made 3D collection so much slower than the old
+    per-slice matching before this optimization).
     """
     num_pr = int(pr_labels.max())
     if num_pr == 0:
@@ -152,18 +163,25 @@ def _one_to_one_match(
 
     pr_areas = np.bincount(pr_labels.ravel())
     gt_areas = np.bincount(gt_labels.ravel())
+    pr_bboxes = ndimage.find_objects(pr_labels)
 
     matched_gt_ids: Set[int] = set()
     matched_pr_ids: Set[int] = set()
     pairs: Dict[int, int] = {}
 
     for pr_id in range(1, num_pr + 1):
-        pr_mask = pr_labels == pr_id
-        overlapping_gt_ids = np.unique(gt_labels[pr_mask])
+        bbox = pr_bboxes[pr_id - 1]
+        if bbox is None:  # no voxels with this label (can't happen for a
+            continue  # dense 1..num_pr range, but find_objects allows gaps)
+
+        pr_crop = pr_labels[bbox]
+        gt_crop = gt_labels[bbox]
+        pr_mask = pr_crop == pr_id
+        overlapping_gt_ids = np.unique(gt_crop[pr_mask])
         for gt_id in overlapping_gt_ids:
             if gt_id == 0 or gt_id in matched_gt_ids:
                 continue
-            gt_mask = gt_labels == gt_id
+            gt_mask = gt_crop == gt_id
             intersection = np.logical_and(pr_mask, gt_mask).sum()
             union = pr_areas[pr_id] + gt_areas[gt_id] - intersection
             iou = intersection / union if union else 0.0
@@ -228,6 +246,13 @@ def _build_instance_matches(
     of :func:`match_instances`, factored out so
     :func:`match_and_find_false_positives` can reuse it without labeling or
     running :func:`_one_to_one_match` a second time.
+
+    Like :func:`_one_to_one_match`, every mask/overlap computation is
+    restricted to the GT instance's own bounding box - ``regionprops``
+    already computes this for free as ``prop.slice``/``prop.image``, so
+    reusing them (instead of an ``gt_labels == prop.label`` scan of the
+    *entire* array per instance) is what keeps this cheap on a full 3D
+    volume instead of one 2D slice.
     """
     pr_areas = np.bincount(pr_labels.ravel()) if pr_labels.max() > 0 else np.array([0])
 
@@ -238,14 +263,15 @@ def _build_instance_matches(
 
     results: List[InstanceMatch] = []
     for prop in props:
-        gt_mask = gt_labels == prop.label
-        overlapping_pr_ids = np.unique(pr_labels[gt_mask])
+        gt_mask = prop.image  # already cropped to prop.slice's bounding box
+        pr_crop = pr_labels[prop.slice]
+        overlapping_pr_ids = np.unique(pr_crop[gt_mask])
 
         max_iou = 0.0
         for pr_id in overlapping_pr_ids:
             if pr_id == 0:
                 continue
-            pr_mask = pr_labels == pr_id
+            pr_mask = pr_crop == pr_id
             intersection = np.logical_and(pr_mask, gt_mask).sum()
             union = prop.area + pr_areas[pr_id] - intersection
             iou = intersection / union

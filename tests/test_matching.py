@@ -197,3 +197,49 @@ def test_3d_volume_labeling_counts_cross_slice_cell_once_not_once_per_slice():
 
     per_slice_counts = sum(len(match_instances(gt_vol[z], pr_vol[z])) for z in range(shape[0]))
     assert per_slice_counts == 4
+
+
+def test_matching_handles_many_disjoint_3d_instances_correctly():
+    """Regression test for the bounding-box-cropped rewrite of
+    _one_to_one_match()/_build_instance_matches(): on a full 3D volume, both
+    now restrict every mask/overlap computation to each instance's own
+    bounding box (via scipy.ndimage.find_objects / regionprops' prop.slice)
+    instead of scanning the whole array per instance, which is what makes
+    matching a stacked 3D volume fast instead of prohibitively slow. This
+    scatters several same-sized cells at disjoint 3D locations - some
+    matched, some blind FN, some hallucination FP - so a bounding-box
+    indexing mistake (wrong axis order, off-by-one crop, a match leaking
+    from a neighbouring instance's box) would show up as a wrong
+    classification or IoU here.
+    """
+    shape = (20, 60, 60)
+    gt = np.zeros(shape, dtype=np.uint8)
+    pr = np.zeros(shape, dtype=np.uint8)
+
+    # Matched pair, far from everything else.
+    gt[1:5, 5:10, 5:10] = 1
+    pr[1:5, 5:10, 5:10] = 1
+
+    # A second matched pair, at a different z-range and xy location.
+    gt[10:14, 30:35, 10:15] = 1
+    pr[10:14, 30:35, 10:15] = 1
+
+    # Blind FN: nothing overlapping anywhere near it.
+    gt[5:9, 40:45, 40:45] = 1
+
+    # Hallucination FP: a prediction with no GT partner nearby.
+    pr[15:19, 5:10, 40:45] = 1
+
+    matches = match_instances(gt, pr)
+    fps = find_false_positives(gt, pr)
+
+    assert len(matches) == 3
+    tp_count = sum(1 for m in matches if m.classify() == "true_positive")
+    blind_fn_count = sum(1 for m in matches if m.classify() == "blind_fn")
+    assert tp_count == 2
+    assert blind_fn_count == 1
+    assert all(m.best_iou == 1.0 for m in matches if m.classify() == "true_positive")
+    assert all(m.volume == 4 * 5 * 5 for m in matches)
+
+    assert len(fps) == 1
+    assert fps[0].volume == 4 * 5 * 5
