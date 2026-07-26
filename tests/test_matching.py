@@ -151,3 +151,49 @@ def test_false_positive_mean_intensity_uses_raw_array():
 
     assert len(fps) == 1
     assert fps[0].mean_intensity == 17.0
+
+
+# --- 3D volume labeling (SEGDIAG_3D_INSTANCE_FIX.md regression) -------------
+
+
+def test_match_instances_is_shape_agnostic_and_works_on_3d_volumes():
+    """match_instances()/find_false_positives() themselves never assumed a
+    2D input - passing a 3D volume should "just work" via skimage.measure.
+    label's own default (full/26-connected) 3D connectivity. This is what
+    lets segdiag.core.pipeline.collect() stack a sample's slices into one
+    3D volume and match it once, instead of once per 2D slice.
+    """
+    shape = (4, 20, 20)
+    gt_vol = np.zeros(shape, dtype=np.uint8)
+    gt_vol[1:3, 5:10, 5:10] = 1  # one cell spanning z = 1, 2
+    pr_vol = np.zeros(shape, dtype=np.uint8)
+    pr_vol[1:3, 5:10, 5:10] = 1  # exact match
+
+    matches = match_instances(gt_vol, pr_vol)
+
+    assert len(matches) == 1
+    assert matches[0].matched
+    assert matches[0].volume == 2 * 5 * 5
+    assert len(matches[0].centroid) == 3
+    assert len(matches[0].bbox) == 6
+
+
+def test_3d_volume_labeling_counts_cross_slice_cell_once_not_once_per_slice():
+    """The regression scenario from SEGDIAG_3D_INSTANCE_FIX.md: a single
+    cell spanning 4 z-slices (``gt[1:5, 5:10, 5:10] = 1``) must be counted
+    as exactly 1 instance when the whole volume is labeled at once - the new
+    (correct) behavior. Labeling each 2D slice independently and summing -
+    the old, buggy per-slice pipeline behavior - instead counts it 4 times,
+    once per slice it touches.
+    """
+    shape = (6, 20, 20)
+    gt_vol = np.zeros(shape, dtype=np.uint8)
+    gt_vol[1:5, 5:10, 5:10] = 1  # spans z = 1, 2, 3, 4 -> 4 slices
+    pr_vol = np.zeros(shape, dtype=np.uint8)
+
+    matches_3d = match_instances(gt_vol, pr_vol)
+    assert len(matches_3d) == 1
+    assert matches_3d[0].volume == 4 * 5 * 5
+
+    per_slice_counts = sum(len(match_instances(gt_vol[z], pr_vol[z])) for z in range(shape[0]))
+    assert per_slice_counts == 4

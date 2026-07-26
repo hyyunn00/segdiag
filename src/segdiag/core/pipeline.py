@@ -9,13 +9,20 @@ diagnostic step), so the same GT/prediction pair is never re-matched twice
 across a run and every check can share one cached table instead of
 re-reading images.
 
+Instance matching runs once per **3D volume** (all of a (sample, model)'s
+z-slices stacked together via ``np.stack``), not once per 2D slice - a cell
+spanning several z-slices must be counted once, not once per slice it
+touches. See ``SEGDIAG_3D_INSTANCE_FIX.md`` for the bug this fixes and why.
+Image-quality metrics remain a genuine per-slice measurement (SNR, focus,
+etc. are properties of one 2D image) and are unaffected.
+
 Image-quality metrics and FP root-cause classification are computed here via
 pure functions imported from their respective checks
 (:mod:`segdiag.checks.raw_image_quality`, :mod:`segdiag.checks.fp_root_cause`)
-- those modules own the actual formulas; this module just calls them once
-per slice while it already has the arrays in hand, so the ``raw-image-
-quality``/``fp-root-cause`` checks themselves only need to aggregate and
-plot columns that already exist in the collected tables.
+- those modules own the actual formulas; this module just calls them while
+it already has the arrays in hand, so the ``raw-image-quality``/
+``fp-root-cause`` checks themselves only need to aggregate and plot columns
+that already exist in the collected tables.
 """
 
 from __future__ import annotations
@@ -24,7 +31,7 @@ import logging
 import math
 from dataclasses import asdict, fields
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, cast
 
 import numpy as np
 import pandas as pd
@@ -54,27 +61,48 @@ def _nearest_gt_distance(centroid: tuple, gt_matches: list) -> Optional[float]:
     return min(math.dist(centroid, m.centroid) for m in gt_matches)
 
 
-def _slice_instance_rows(
-    gt_arr: np.ndarray,
-    pr_arr: np.ndarray,
-    raw_arr: Optional[np.ndarray],
+def _volume_instance_rows(
+    gt_vol: np.ndarray,
+    pr_vol: np.ndarray,
+    raw_vol: Optional[np.ndarray],
     *,
     dataset: str,
     sample: str,
     model: str,
-    slice_name: str,
-    z_index: int,
+    slice_names: List[str],
 ) -> List[dict]:
-    """Build every ``InstanceRecord`` row for one GT/prediction slice pair,
-    using the shared :mod:`segdiag.core.matching` primitives.
+    """Build every ``InstanceRecord`` row for one (sample, model) pair,
+    labeling the *entire* stacked 3D volume once via
+    :func:`segdiag.core.matching.match_and_find_false_positives` - not once
+    per 2D slice. This is the fix for the object-count inflation bug
+    described in ``SEGDIAG_3D_INSTANCE_FIX.md``: a cell spanning several
+    z-slices must be counted once, not once per slice it touches.
+
+    ``gt_vol``/``pr_vol``/``raw_vol`` are ``(Z, Y, X)`` stacks built by
+    :func:`collect` from the same ordered ``slice_names`` list, so index
+    ``z`` in every array corresponds to ``slice_names[z]``. ``regionprops``
+    on a 3D array returns 3-tuple centroids/6-tuple bboxes in ``(z, y, x)``
+    order, which is why ``InstanceRecord``'s centroid/bbox fields split out
+    a ``_z`` component alongside the existing ``_row``/``_col`` ones.
+
+    Every instance's ``z_index``/``slice_name`` is derived from
+    ``round(centroid_z)`` (clamped to the volume's bounds) - the single
+    slice nearest that instance's 3D center, not "the slice it was found
+    on" (a 3D instance has no such single slice).
     """
     from segdiag.checks.fp_root_cause import classify_fp_subtype, compute_local_background_stats
 
     rows: List[dict] = []
+    num_z = gt_vol.shape[0]
 
-    gt_matches, fps, pairs = match_and_find_false_positives(gt_arr, pr_arr, raw_arr=raw_arr)
+    def _nearest_slice(z_coord: float) -> tuple:
+        z_index = max(0, min(num_z - 1, int(round(z_coord))))
+        return z_index, slice_names[z_index]
 
-    for m in gt_matches:
+    matches, fps, pairs = match_and_find_false_positives(gt_vol, pr_vol, raw_arr=raw_vol)
+
+    for m in matches:
+        z_index, slice_name = _nearest_slice(m.centroid[0])
         rows.append(
             asdict(
                 InstanceRecord(
@@ -87,12 +115,15 @@ def _slice_instance_rows(
                     instance_id=m.gt_id,
                     volume=m.volume,
                     mean_intensity=m.mean_intensity,
-                    centroid_y=float(m.centroid[0]),
-                    centroid_x=float(m.centroid[1]),
-                    bbox_min_row=m.bbox[0],
-                    bbox_min_col=m.bbox[1],
-                    bbox_max_row=m.bbox[2],
-                    bbox_max_col=m.bbox[3],
+                    centroid_z=float(m.centroid[0]),
+                    centroid_y=float(m.centroid[1]),
+                    centroid_x=float(m.centroid[2]),
+                    bbox_min_z=m.bbox[0],
+                    bbox_min_row=m.bbox[1],
+                    bbox_min_col=m.bbox[2],
+                    bbox_max_z=m.bbox[3],
+                    bbox_max_row=m.bbox[4],
+                    bbox_max_col=m.bbox[5],
                     classification=m.classify(),
                     best_iou=m.best_iou,
                     matched_instance_id=pairs.get(m.gt_id),
@@ -101,10 +132,10 @@ def _slice_instance_rows(
         )
 
     for fp in fps:
-        nearest_gt_distance = _nearest_gt_distance(fp.centroid, gt_matches)
+        nearest_gt_distance = _nearest_gt_distance(fp.centroid, matches)
         background_mean, background_std = (
-            compute_local_background_stats(raw_arr, gt_arr, pr_arr, fp.bbox)
-            if raw_arr is not None
+            compute_local_background_stats(raw_vol, gt_vol, pr_vol, fp.bbox)
+            if raw_vol is not None
             else (None, None)
         )
         fp_subtype = classify_fp_subtype(
@@ -113,6 +144,7 @@ def _slice_instance_rows(
             background_mean=background_mean,
             background_std=background_std,
         )
+        z_index, slice_name = _nearest_slice(fp.centroid[0])
         rows.append(
             asdict(
                 InstanceRecord(
@@ -125,12 +157,15 @@ def _slice_instance_rows(
                     instance_id=fp.pr_id,
                     volume=fp.volume,
                     mean_intensity=fp.mean_intensity,
-                    centroid_y=float(fp.centroid[0]),
-                    centroid_x=float(fp.centroid[1]),
-                    bbox_min_row=fp.bbox[0],
-                    bbox_min_col=fp.bbox[1],
-                    bbox_max_row=fp.bbox[2],
-                    bbox_max_col=fp.bbox[3],
+                    centroid_z=float(fp.centroid[0]),
+                    centroid_y=float(fp.centroid[1]),
+                    centroid_x=float(fp.centroid[2]),
+                    bbox_min_z=fp.bbox[0],
+                    bbox_min_row=fp.bbox[1],
+                    bbox_min_col=fp.bbox[2],
+                    bbox_max_z=fp.bbox[3],
+                    bbox_max_row=fp.bbox[4],
+                    bbox_max_col=fp.bbox[5],
                     classification=fp.classification,
                     best_iou=None,
                     matched_instance_id=None,
@@ -178,9 +213,10 @@ def collect(
     cache_path: Optional[Path] = None,
     force_refresh: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Single pass over the dataset: for every GT/prediction slice pair,
-    run ``match_instances`` + ``find_false_positives``, and return
-    ``(instances_df, quality_df)``.
+    """Single pass over the dataset: for every (sample, model) pair, stack
+    all its z-slices into one 3D volume and run ``match_instances`` +
+    ``find_false_positives`` on that volume *once* (not once per slice - see
+    the module docstring), and return ``(instances_df, quality_df)``.
 
     If ``cache_path`` is given and both cache files already exist (and
     ``force_refresh`` is False), the cache is loaded instead of re-scanning.
@@ -308,7 +344,13 @@ def collect(
                 model_name,
             )
 
-            for z_index, gtf in enumerate(gt_files):
+            # Read every prediction slice that has a same-shape GT
+            # counterpart, then stack the whole (sample, model) run into one
+            # 3D volume and match it *once* - matching per 2D slice here
+            # would recount every cell that spans multiple z-slices once per
+            # slice it touches (see SEGDIAG_3D_INSTANCE_FIX.md).
+            pr_arrays: Dict[str, np.ndarray] = {}
+            for gtf in gt_files:
                 if gtf.name not in gt_arrays:
                     continue
 
@@ -322,32 +364,52 @@ def collect(
                     logger.warning("Error reading %s: %s", prf.name, exc)
                     continue
 
-                gt_arr = gt_arrays[gtf.name]
-                if gt_arr.shape != pr_arr.shape:
+                if gt_arrays[gtf.name].shape != pr_arr.shape:
                     continue
 
-                instance_rows.extend(
-                    _slice_instance_rows(
-                        gt_arr,
-                        pr_arr,
-                        raw_arrays.get(gtf.name),
-                        dataset=dataset_name,
-                        sample=sample_name,
-                        model=model_name,
-                        slice_name=gtf.name,
-                        z_index=z_index,
-                    )
+                pr_arrays[gtf.name] = pr_arr
+
+            common_files = [f for f in gt_files if f.name in gt_arrays and f.name in pr_arrays]
+            if not common_files:
+                continue
+            if len(common_files) < len(gt_files):
+                logger.warning(
+                    "  %s / %s vs %s: only %d/%d slices had a matching "
+                    "same-shape prediction - stacking those into the 3D "
+                    "volume, skipping the rest",
+                    sample_name,
+                    gt_dir.name,
+                    p_dir.name,
+                    len(common_files),
+                    len(gt_files),
                 )
 
-                if (z_index + 1) % 50 == 0:
-                    logger.info(
-                        "  ...%d/%d slices matched for %s / %s vs %s",
-                        z_index + 1,
-                        len(gt_files),
-                        sample_name,
-                        gt_dir.name,
-                        p_dir.name,
-                    )
+            gt_vol = np.stack([gt_arrays[f.name] for f in common_files], axis=0)
+            pr_vol = np.stack([pr_arrays[f.name] for f in common_files], axis=0)
+            raw_vol: Optional[np.ndarray] = None
+            if all(raw_arrays.get(f.name) is not None for f in common_files):
+                raw_vol = np.stack(
+                    [cast(np.ndarray, raw_arrays[f.name]) for f in common_files], axis=0
+                )
+
+            instance_rows.extend(
+                _volume_instance_rows(
+                    gt_vol,
+                    pr_vol,
+                    raw_vol,
+                    dataset=dataset_name,
+                    sample=sample_name,
+                    model=model_name,
+                    slice_names=[f.name for f in common_files],
+                )
+            )
+            logger.info(
+                "  ...matched %d slice(s) as one 3D volume for %s / %s vs %s",
+                len(common_files),
+                sample_name,
+                gt_dir.name,
+                p_dir.name,
+            )
 
     instances_df = pd.DataFrame(instance_rows, columns=_INSTANCE_COLUMNS)
     quality_df = pd.DataFrame(quality_rows, columns=_QUALITY_COLUMNS)

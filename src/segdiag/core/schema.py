@@ -15,7 +15,14 @@ from typing import Optional
 
 @dataclass(frozen=True)
 class InstanceRecord:
-    """One row = one GT or predicted instance on one slice.
+    """One row = one GT or predicted instance, labeled once across the
+    entire 3D (sample, model) volume - not once per 2D slice (see
+    ``segdiag.core.pipeline.collect``).
+
+    ``slice_name``/``z_index`` identify the single representative slice
+    nearest this instance's 3D centroid (``round(centroid_z)``), not "the
+    slice this instance was found on" - a 3D instance has no single owning
+    slice, it just happens to be centered near one.
 
     This is the atomic unit every downstream check (FN characteristics, ROI,
     detection curves, FP root-cause...) is derived from. Nothing re-reads
@@ -31,10 +38,13 @@ class InstanceRecord:
     instance_id: int
     volume: int
     mean_intensity: Optional[float]
+    centroid_z: float
     centroid_y: float
     centroid_x: float
+    bbox_min_z: int
     bbox_min_row: int
     bbox_min_col: int
+    bbox_max_z: int
     bbox_max_row: int
     bbox_max_col: int
     classification: str  # "true_positive" | "blind_fn" | "merged_fn" | "false_positive"

@@ -52,11 +52,8 @@ class FnCharacteristicsCheck(Check):
             (instances["role"] == "prediction") & (instances["classification"] == "false_positive")
         ].copy()
 
-        # NOTE: "z_depth" here is centroid_y (the per-slice row coordinate),
-        # not a literal Z slice index - preserved verbatim from the
-        # pre-refactor step to keep output values unchanged.
-        gt["z_depth"] = gt["centroid_y"]
-        fp["z_depth"] = fp["centroid_y"]
+        gt["z_depth"] = gt["centroid_z"]
+        fp["z_depth"] = fp["centroid_z"]
 
         df = pd.concat([gt, fp], ignore_index=True, sort=False)
 

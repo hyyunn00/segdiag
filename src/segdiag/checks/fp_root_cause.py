@@ -71,25 +71,32 @@ def compute_local_background_stats(
     bbox: Tuple[int, ...],
     pad: int = LOCAL_BACKGROUND_PAD,
 ) -> Tuple[Optional[float], Optional[float]]:
-    """Mean/std raw intensity of the true-background pixels in a
-    ``pad``-pixel neighbourhood around a false positive's ``bbox``.
+    """Mean/std raw intensity of the true-background voxels in a
+    ``pad``-voxel neighbourhood around a false positive's ``bbox``.
 
-    "True background" here means pixels that are part of neither *any* GT
+    Dimension-agnostic: ``bbox`` is ``(*mins, *maxs)`` (length ``2 * ndim``,
+    e.g. ``(min_row, min_col, max_row, max_col)`` for a 2D array or
+    ``(min_z, min_row, min_col, max_z, max_row, max_col)`` for a 3D volume),
+    matching whatever ``raw_arr.ndim`` the caller passes in.
+
+    "True background" here means voxels that are part of neither *any* GT
     cell nor *any* predicted instance in that neighbourhood - so neighbouring
     real cells and the FP itself never contaminate the estimate. Returns
     ``(None, None)`` if the padded neighbourhood happens to have no such
-    pixels at all (e.g. an unusually crowded field).
+    voxels at all (e.g. an unusually crowded field).
     """
-    min_row, min_col, max_row, max_col = bbox
-    h, w = raw_arr.shape
-    r0, r1 = max(0, min_row - pad), min(h, max_row + pad)
-    c0, c1 = max(0, min_col - pad), min(w, max_col + pad)
+    ndim = raw_arr.ndim
+    mins, maxs = bbox[:ndim], bbox[ndim:]
+    window = tuple(
+        slice(max(0, lo - pad), min(size, hi + pad))
+        for lo, hi, size in zip(mins, maxs, raw_arr.shape)
+    )
 
-    bg_mask = (gt_arr[r0:r1, c0:c1] == 0) & (pr_arr[r0:r1, c0:c1] == 0)
+    bg_mask = (gt_arr[window] == 0) & (pr_arr[window] == 0)
     if not bg_mask.any():
         return None, None
 
-    bg_values = raw_arr[r0:r1, c0:c1].astype(np.float64)[bg_mask]
+    bg_values = raw_arr[window].astype(np.float64)[bg_mask]
     return float(bg_values.mean()), float(bg_values.std())
 
 
