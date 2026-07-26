@@ -1,0 +1,243 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/).
+
+## [1.0.0] - 2026-07-26
+
+**Breaking change.** `segdiag` moved from six independent, argparse-driven
+scripts to a modular collect/check/writer evaluation framework. See
+[`docs/migration.md`](docs/migration.md) for the full old-CLI-to-new-CLI
+command mapping and behavior-change list; the short version:
+
+- `segdiag <step-name> --base-dir D` -> `segdiag run <check-name> --base-dir D`
+- `segdiag run-all --base-dir D` -> `segdiag run all --base-dir D`
+- Three checks that didn't exist before: `raw-image-quality`,
+  `gt-annotation-quality`, `fp-root-cause`.
+- `--max-slices` is now one global budget for the whole run instead of a
+  per-step one, and defaults to unbounded instead of always-capped.
+
+### Added (Phase 1 of the evaluation-framework upgrade: data-layer foundation)
+- `segdiag.core.schema`: `InstanceRecord` (one row per GT/predicted instance)
+  and `ImageQualityRecord` (one row per slice's image-quality metrics) -
+  the standardized long-format tables every future check will read instead
+  of re-reading TIFFs. `ImageQualityRecord` population lands with the
+  `raw_image_quality` check in a later phase; for now `collect()` returns
+  an empty, correctly-shaped quality table.
+- `segdiag.core.pipeline.collect()`: a single-pass dataset scan that unifies
+  the "find GT/prediction folders -> read TIFFs -> match_instances ->
+  find_false_positives" logic previously duplicated across all six
+  diagnostic steps. Supports optional parquet caching (`cache_path`,
+  `force_refresh`) so repeated analysis runs don't re-scan the dataset.
+  The six existing steps are unchanged in this phase and do not use
+  `collect()` yet (that's Phase 2); this only adds the shared foundation
+  and cross-validates it against the existing steps' own per-slice
+  computation.
+- `tests/test_schema.py`, `tests/test_pipeline.py`: including direct
+  cross-validation of `pipeline._slice_instance_rows()` against the
+  existing `fn_characteristics`/`detection_probability`/`fn_contribution`
+  steps' own (unmodified) per-slice collection helpers on identical
+  synthetic arrays, confirming identical volume/mean_intensity/best_iou/
+  classification values.
+- `pyarrow` added as a dependency (parquet read/write for the collect()
+  cache).
+
+### Added (Phase 2: output standardization + Check abstraction layer)
+- `segdiag.core.report.ReportArtifact`: the standard "one table + optional
+  one figure" container every check now returns, instead of each step
+  deciding for itself what to `print()`/`savefig()`.
+- `segdiag.core.writers`: `CsvWriter`/`ParquetWriter`/`HtmlWriter` (registered
+  in `WRITER_REGISTRY`), selected by the new `--format csv,parquet,html`
+  CLI flag (comma-separated, multiple allowed). `HtmlWriter.write_index()`
+  additionally builds one consolidated `index.html` per run combining every
+  artifact produced. The `--sample`/`--model`/`--output-dir` filename-
+  tagging convention itself is unchanged (`segdiag.core.reporting.
+  source_tag`/`resolve_output_dir`) - writers just call it now.
+- `segdiag.checks.base.Check`: the abstract base every check implements
+  (`name`, `description`, `run(instances, quality, args) ->
+  list[ReportArtifact]`). All six original steps were rewritten as
+  `Check` subclasses under `segdiag/checks/` (replacing `segdiag/steps/`,
+  which is removed) that read from `collect()`'s tables instead of
+  scanning folders/TIFFs themselves - `fn-visualize` is the one exception,
+  since it needs dynamically-cropped 3D Z-context around sampled ghost
+  cells rather than a statistical summary. `fn-characteristics` and
+  `fn-contribution` also now emit an extra `_confusion`/`_fp_summary`
+  artifact (previously console-only output).
+- `segdiag.checks.CHECKS`: the registry `segdiag run <name>` / `run all`
+  reads from. Adding a check needs one new file + one registry line - no
+  CLI or I/O changes.
+- `cli.py` rewritten with `typer` (`segdiag run <check|all> --base-dir ...`,
+  `segdiag list-checks`), replacing the hand-rolled argparse subparsers.
+- Cross-validated with `tests/test_checks/test_migrated_checks.py`: every
+  migrated check's tp/fp/fn/precision/recall/f1 output is asserted against
+  numbers computed directly from `match_instances()`/`find_false_positives()`
+  on the same synthetic dataset.
+
+### Added (Phase 3: input-data-quality and FP-root-cause checks)
+- `segdiag.checks.raw_image_quality` (`raw-image-quality`): per-slice SNR
+  estimate, Laplacian-variance blur proxy, saturation %, and a per-sample
+  recall/FP-rate-vs-quality scatter - answers "is low recall a modeling
+  problem, or is the raw data itself the problem?" Its pure
+  `compute_image_quality_metrics()` is called directly by `collect()` to
+  populate `ImageQualityRecord` (previously an empty placeholder table from
+  Phase 1).
+- `segdiag.checks.gt_annotation_quality` (`gt-annotation-quality`): IQR-based
+  GT volume-outlier detection, border-touching-instance detection, and
+  density-anomaly detection (GT count per slice vs. its own sample's
+  median, flagging annotator-drift-style cliffs).
+- `segdiag.checks.fp_root_cause` (`fp-root-cause`): classifies every false
+  positive into `noise_fp` / `boundary_split_fp` / `hallucination_fp` via
+  the pure, rule-based `classify_fp_subtype()`, called directly by
+  `collect()` so `InstanceRecord.fp_subtype` is populated for every FP row
+  regardless of whether this check ever runs.
+- `tests/test_checks/`: one test file per check (migrated and new), plus a
+  shared `conftest.py` fixture with a richer synthetic dataset (varied
+  volume/intensity, planted outliers/border cells/density anomalies/FP
+  subtypes) so decile/quartile-based checks have enough variety to bin on.
+
+### Added (Phase 4: configuration + engineering conventions)
+- `segdiag.core.config.load_config()` + `segdiag.toml.example`: optional
+  `segdiag.toml` project config for `[dataset]`/`[output]` defaults (CLI
+  flags always take precedence). `[thresholds]` is parsed/validated but not
+  yet wired through to matching/collect internals - see
+  `docs/configuration.md`.
+- `mypy` (`[tool.mypy]` in `pyproject.toml`) and `ruff` (`[tool.ruff.lint]`,
+  scoped to pyflakes/pycodestyle-core/isort - pyupgrade rules deliberately
+  excluded since this codebase intentionally uses `typing.Optional`/`List`
+  for Python 3.9 compatibility) now enforced in CI, alongside `black`.
+- `pytest-cov` with an 80% coverage gate (`[tool.coverage.report]`).
+- `.pre-commit-config.yaml` (ruff + black + mypy) and
+  `.github/workflows/ci.yml` (pytest matrix across 3.9-3.12, lint, mypy).
+- `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`.
+- Logging switched from `logging.basicConfig` plain text to
+  `rich.logging.RichHandler`.
+- `mkdocs.yml` + `docs/` (architecture, checks, configuration, migration,
+  contributing) - `pip install -e ".[docs]"` + `mkdocs serve`.
+- `setuptools-scm` (git-tag-derived versioning) was considered but not
+  adopted yet: this repository isn't currently under git version control,
+  so there are no tags for it to derive a version from. The version is
+  still bumped manually in `pyproject.toml`/`segdiag/__init__.py` for now.
+
+### Added (Phase 5: documentation)
+- `README.md` rewritten around the collect/check/writer architecture.
+- This changelog entry / migration guide.
+
+### Added (core alignment: matching algorithm, not just discovery)
+- **`segdiag.core.matching`'s TP/FN membership is now computed by the same
+  one-to-one greedy matching algorithm, iteration order, and IoU threshold
+  as the lab's own `compute_object_metrics` (`metrics.py`)** - previously
+  segdiag only used a per-GT "best IoU" rule with no one-to-one constraint,
+  which could disagree with the lab's metrics in cases where two GT
+  instances both overlap the same prediction. Verified against
+  `compute_object_metrics` on 30 random synthetic cases with zero
+  mismatches in tp/fp/fn counts.
+- **`segdiag.core.matching.find_false_positives`**: segdiag previously never
+  computed false positives at all (only GT-side "was this cell found?"
+  diagnostics). This returns every predicted instance with no real GT
+  partner - exactly what `compute_object_metrics` counts toward its FP
+  total - with the same volume/intensity/centroid/bbox info already
+  available for GT instances, so spurious detections can be characterized
+  (are they small noise, or large plausible-looking hallucinations?) the
+  same way missed cells already were.
+- **Step 3 (`fn-characteristics`)** now plots false positives as a fourth
+  category alongside blind FN / merged FN / true positive on all three
+  panels (volume, intensity, Z-depth), and prints a per-model
+  `tp/fp/fn/precision/recall/f1` summary computed with the exact same
+  definitions as `compute_object_metrics`.
+- **Step 5 (`fn-contribution`)** gained a fourth panel: false-positive
+  count by volume bin, answering "are the model's hallucinated detections
+  concentrated in the small/noisy end, or is it inventing large,
+  plausible-looking cells?"
+- **Step 1 (`iou-distribution`)** now splits its TP/FN histogram bars using
+  the aligned `matched` flag (not a raw `best_iou >= 0.5` cutoff), and logs
+  an aligned `tp/fp/fn/precision/recall/f1` summary alongside the plot.
+
+### Added (CLI scoping, output consolidation, analysis.py-aligned discovery)
+- `--sample TEXT` on every step and `run-all`: scope a run to one or more
+  sample folders (comma-separated substrings), instead of always scanning
+  the whole `--base-dir`.
+- `--model TEXT` on every step and `run-all`: scope a run to one or more
+  model/version prediction folders (comma-separated substrings, e.g. `v9`).
+- `--output-dir PATH` on every step and `run-all`: consolidate all figures
+  from a run into one folder instead of scattering them across the dataset
+  tree. Every saved figure (and step 2's gallery subfolder) is
+  automatically prefixed with a source tag
+  (`<dataset>__<sample-filter>__<model-filter>`), so repeated runs with
+  different scopes never overwrite each other.
+- `segdiag.core.reporting` module: shared implementation of the above.
+- Steps now log a one-line "evaluation scope" summary before doing any
+  (potentially slow) work, so a mis-typed `--sample`/`--model` filter is
+  caught immediately.
+- `segdiag.core.io_utils.resolve_image_dir` / `extract_model_name`:
+  analysis.py-aligned dynamic image-folder resolution and model-name
+  extraction (`{image_folder}_{model}_mask` regex), with an explicit
+  `--raw-name` still tried first for backward compatibility.
+- Prediction-folder discovery now accepts `.scroll-tif` *and* `.scroll-tiff`.
+
+### Changed (naming standardized to snake_case / consistent file prefixes)
+- **Breaking**: `InstanceMatch.classify()` now returns short snake_case
+  codes (`"blind_fn"`, `"merged_fn"`, `"true_positive"`) instead of
+  descriptive strings like `"Blind FN (IoU < 0.05)"`. Look up
+  `segdiag.core.matching.CLASSIFICATION_LABELS[code]` for the old
+  human-readable text (used for chart labels).
+- **Breaking**: every step's internal DataFrame columns are now lowercase
+  snake_case (`volume`, `mean_intensity`, `z_depth`, `best_iou`,
+  `classification`, `sample`, `model`, `volume_bin`, `intensity_bin`,
+  `is_tp`, `is_fn`, `total_cells`, `fn_count`, `tp_count`,
+  `pct_of_total_gt`, `recall_pct`, `pct_contribution_to_total_fn`, ...) -
+  previously a mix of `"Title Case With Spaces"`, `"Mixed_Case"`, and
+  `%`-suffixed names. This matches the lab's own `metrics.py` convention
+  (`tp`, `fp`, `accuracy`, `obj_f1`, ...). Chart axis labels/titles are set
+  explicitly and remain human-readable; only the underlying column names
+  changed.
+- **Breaking**: output filenames are now consistently `stepN_<name>.<ext>`
+  for every step (previously only steps 4-6 had a step-number prefix):
+  `step1_iou_distribution.png`, `step2_fn_diagnosis_3d/` (gallery folder),
+  `step3_fn_characteristics.png`, `step4_detection_probability.png`,
+  `step5_fn_contribution.png` (was `step5_fn_roi_analysis.png`),
+  `step6_story_closure.png` (was `step6_final_story_closure.png`).
+- `segdiag.core.matching.TP_IOU_THRESHOLD`/`BLIND_FN_IOU_THRESHOLD` are
+  unchanged (still 0.5 / 0.05), but `InstanceMatch` gained a `matched: bool`
+  field that now drives `is_tp`/`is_fn` (previously those properties were
+  computed directly from `best_iou >= 0.5`).
+- Default connectivity for connected-component labeling changed from `1`
+  (face-connectivity) to `None` (skimage's full-connectivity default),
+  matching `compute_object_metrics`'s default. Pass `connectivity=1`
+  explicitly to reproduce the old behaviour.
+- README's documented data layout now describes `analysis.py`'s actual
+  prediction-folder naming convention
+  (`{image}_{model}_mask.scroll-tif(f)`) as the primary/aligned convention.
+
+### Fixed
+- Steps 2-6 previously only ever evaluated the *first* prediction folder
+  found per sample (`pred_folders[0]`), silently ignoring any additional
+  models/versions present. They now evaluate every matching prediction
+  folder. Use `--model` to isolate a single version instead.
+- Collected per-cell records in steps 3-6 now carry `sample`/`model`
+  columns, and each step prints a per-model breakdown when a run covers
+  more than one model.
+
+### Removed
+- The `full-metrics` step (previously "Step 7") and the vendored copy of
+  the lab's `utils/metrics.py` it depended on have been removed, along with
+  the `torch`/`scikit-learn`/`scipy` dependencies and `xlsx` extra that
+  only existed to support it. segdiag no longer reproduces `analysis.py`'s
+  report directly; it stays a standalone, numpy/skimage-only toolkit whose
+  matching algorithm and thresholds are built to *agree* with
+  `analysis.py`/`metrics.py` (see the "Added (core alignment...)" entries
+  above and `tests/test_matching.py`) without depending on or vendoring it.
+
+## [0.1.0] - 2026-07-17
+
+### Added
+- Initial packaged release, consolidating six standalone diagnostic scripts
+  into a single installable toolkit with a unified CLI (`segdiag`).
+- Shared `segdiag.core.matching` module: a single, tested implementation of
+  instance-level GT vs. prediction IoU matching (previously duplicated six
+  times across the original scripts).
+- Shared `segdiag.core.io_utils` module for dataset folder discovery and
+  `.tif` / `.tiff` file pairing.
+- `segdiag run-all` command to execute the full 6-step diagnostic pipeline
+  in one call.
+- Unit tests for the core matching logic.

@@ -1,0 +1,96 @@
+"""End-to-end smoke tests for the typer-based CLI."""
+
+from __future__ import annotations
+
+import numpy as np
+import tifffile
+from typer.testing import CliRunner
+
+from segdiag.cli import app
+
+runner = CliRunner()
+
+
+def _write_dataset(root) -> None:
+    shape = (40, 60)
+    sample_dir = root / "case01"
+    gt_dir = sample_dir / "Flatten_561_mask"
+    raw_dir = sample_dir / "Flatten_561"
+    pred_dir = sample_dir / "Flatten_561_unet_v9_mask.scroll-tif"
+    for d in (gt_dir, raw_dir, pred_dir):
+        d.mkdir(parents=True)
+
+    gt = np.zeros(shape, dtype=np.uint8)
+    gt[5:15, 5:15] = 1
+    pr = gt.copy()
+    raw = np.full(shape, 30.0, dtype=np.float32)
+
+    tifffile.imwrite(gt_dir / "slice_0000.tif", gt)
+    tifffile.imwrite(pred_dir / "slice_0000.tif", pr)
+    tifffile.imwrite(raw_dir / "slice_0000.tif", raw)
+
+
+def test_cli_help_lists_run_and_list_checks_commands():
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    assert "run" in result.stdout
+    assert "list-checks" in result.stdout
+
+
+def test_cli_list_checks_includes_every_registered_check():
+    result = runner.invoke(app, ["list-checks"])
+    assert result.exit_code == 0
+    assert "iou-distribution" in result.stdout
+    assert "fp-root-cause" in result.stdout
+
+
+def test_cli_run_unknown_check_exits_nonzero(tmp_path):
+    _write_dataset(tmp_path)
+    result = runner.invoke(app, ["run", "does-not-exist", "--base-dir", str(tmp_path)])
+    assert result.exit_code == 1
+
+
+def test_cli_run_iou_distribution_writes_csv_output(tmp_path):
+    _write_dataset(tmp_path)
+    out_dir = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "iou-distribution",
+            "--base-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(out_dir),
+            "--format",
+            "csv",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    csv_files = list(out_dir.glob("*step1_iou_distribution.csv"))
+    assert len(csv_files) == 1
+
+
+def test_cli_run_all_produces_a_consolidated_html_report(tmp_path):
+    _write_dataset(tmp_path)
+    out_dir = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "all",
+            "--base-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(out_dir),
+            "--format",
+            "html",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    index_files = list(out_dir.glob("*__index.html"))
+    assert len(index_files) == 1

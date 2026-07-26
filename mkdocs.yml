@@ -1,0 +1,28 @@
+site_name: segdiag
+site_description: Diagnostic toolkit for false-negative analysis of 3D instance segmentation models
+repo_url: https://github.com/your-org/segdiag
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+nav:
+  - Overview: index.md
+  - Architecture: architecture.md
+  - Checks: checks.md
+  - Configuration: configuration.md
+  - Migrating from 0.x: migration.md
+  - Contributing: contributing.md
+
+markdown_extensions:
+  - admonition
+  - tables
+  - fenced_code

@@ -1,0 +1,104 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "segdiag"
+version = "1.0.0"
+description = "Diagnostic evaluation framework for false-negative analysis of 3D instance segmentation models (microscopy)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Your Lab" }]
+keywords = [
+    "segmentation",
+    "instance-segmentation",
+    "microscopy",
+    "false-negative",
+    "diagnostics",
+    "3D",
+    "bioimage-analysis",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy>=1.23",
+    "pandas>=1.5",
+    "matplotlib>=3.6",
+    "seaborn>=0.12",
+    "scikit-image>=0.20",
+    "scipy>=1.9",
+    "tifffile>=2023.2.28",
+    "imagecodecs>=2023.1.23",
+    "tqdm>=4.65",
+    "pyarrow>=14.0",
+    "typer>=0.12",
+    "rich>=13.0",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov>=4.1", "black>=24.0", "ruff>=0.4", "mypy>=1.8"]
+docs = ["mkdocs>=1.6", "mkdocs-material>=9.5"]
+
+[project.scripts]
+segdiag = "segdiag.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/your-org/segdiag"
+Issues = "https://github.com/your-org/segdiag/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+# core/io_utils.py and its pinned test predate black adoption and are
+# deliberately left untouched by this refactor (see segdiag-upgrade-plan.md);
+# reformat-only changes to those two files are still out of scope.
+extend-exclude = '''
+(
+    src/segdiag/core/io_utils\.py
+    | tests/test_io_utils_and_reporting\.py
+)
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+# Deliberately scoped to pyflakes/pycodestyle-core/isort: this codebase
+# consistently uses typing.Optional/List/Dict (for real 3.9 compatibility,
+# not an oversight), so pyupgrade's PEP 604/585 rules are intentionally
+# left out rather than force-upgrading every file just to enable linting.
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.mypy]
+# This is purely mypy's own checking target, independent of the runtime
+# versions segdiag actually supports (requires-python above): recent numpy
+# stubs use PEP 695 syntax mypy can only parse at python_version >= 3.12,
+# and separately mypy >= 2.0 dropped simulating 3.9 entirely.
+python_version = "3.12"
+ignore_missing_imports = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
