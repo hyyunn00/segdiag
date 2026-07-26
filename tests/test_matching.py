@@ -132,12 +132,13 @@ def test_contention_leaves_the_losing_gt_unmatched_even_with_high_best_iou():
     #                      area 200 - the only geometry where both GTs can
     #                      individually clear IoU 0.5 against one prediction
 
-    matched_gt_ids, matched_pr_ids = _one_to_one_match(gt_labels, pr_labels)
+    matched_gt_ids, matched_pr_ids, pairs = _one_to_one_match(gt_labels, pr_labels)
 
     # Only one of the two GTs can be claimed - one prediction, one claim -
     # even though both touch it generously enough to individually qualify.
     assert matched_gt_ids == {1}
     assert matched_pr_ids == {1}
+    assert pairs == {1: 1}
 
 
 def test_false_positive_mean_intensity_uses_raw_array():

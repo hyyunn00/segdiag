@@ -29,7 +29,6 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import tifffile
-from skimage.measure import label as sk_label
 
 from segdiag.core.io_utils import (
     extract_model_name,
@@ -39,56 +38,13 @@ from segdiag.core.io_utils import (
     list_tif_files,
     resolve_image_dir,
 )
-from segdiag.core.matching import TP_IOU_THRESHOLD, find_false_positives, match_instances
+from segdiag.core.matching import match_and_find_false_positives
 from segdiag.core.schema import ImageQualityRecord, InstanceRecord
 
 logger = logging.getLogger(__name__)
 
 _INSTANCE_COLUMNS = [f.name for f in fields(InstanceRecord)]
 _QUALITY_COLUMNS = [f.name for f in fields(ImageQualityRecord)]
-
-
-def _pair_matches(
-    gt_labels: np.ndarray, pr_labels: np.ndarray, min_iou: float = TP_IOU_THRESHOLD
-) -> Dict[int, int]:
-    """Return the ``gt_id -> pr_id`` pairing under the same one-to-one
-    greedy algorithm as ``matching._one_to_one_match`` (same iteration
-    order, same threshold), so ``InstanceRecord`` rows can cross-reference
-    their matched partner via ``matched_instance_id``.
-
-    ``matching._one_to_one_match`` only returns *membership* sets (which
-    gt/pr ids got claimed), not the pairing itself, and ``core/matching.py``
-    is intentionally left untouched by this refactor - so the same small
-    algorithm is re-run here directly on the label arrays purely to recover
-    the pairing. Cross-checked against ``match_instances`` /
-    ``find_false_positives`` membership in ``tests/test_pipeline.py``.
-    """
-    num_pr = int(pr_labels.max())
-    if num_pr == 0:
-        return {}
-
-    pr_areas = np.bincount(pr_labels.ravel())
-    gt_areas = np.bincount(gt_labels.ravel())
-
-    pairs: Dict[int, int] = {}
-    matched_gt_ids: set = set()
-
-    for pr_id in range(1, num_pr + 1):
-        pr_mask = pr_labels == pr_id
-        overlapping_gt_ids = np.unique(gt_labels[pr_mask])
-        for gt_id in overlapping_gt_ids:
-            if gt_id == 0 or gt_id in matched_gt_ids:
-                continue
-            gt_mask = gt_labels == gt_id
-            intersection = np.logical_and(pr_mask, gt_mask).sum()
-            union = pr_areas[pr_id] + gt_areas[gt_id] - intersection
-            iou = intersection / union if union else 0.0
-            if iou >= min_iou:
-                matched_gt_ids.add(int(gt_id))
-                pairs[int(gt_id)] = int(pr_id)
-                break
-
-    return pairs
 
 
 def _nearest_gt_distance(centroid: tuple, gt_matches: list) -> Optional[float]:
@@ -125,14 +81,7 @@ def _slice_instance_rows(
 
     rows: List[dict] = []
 
-    gt_matches = match_instances(gt_arr, pr_arr, raw_arr=raw_arr)
-    fps = find_false_positives(gt_arr, pr_arr, raw_arr=raw_arr)
-
-    pairs: Dict[int, int] = {}
-    if gt_matches:
-        gt_labels = sk_label(gt_arr > 0, connectivity=None)
-        pr_labels = sk_label(pr_arr > 0, connectivity=None)
-        pairs = _pair_matches(gt_labels, pr_labels)
+    gt_matches, fps, pairs = match_and_find_false_positives(gt_arr, pr_arr, raw_arr=raw_arr)
 
     for m in gt_matches:
         rows.append(
@@ -269,6 +218,12 @@ def collect(
 
     dataset_name = root.name
     gt_folders = find_gt_folders(root, mask_name, sample_filter=sample_filter)
+    logger.info(
+        "Collect: found %d GT folder(s) to scan under %s (this runs once; "
+        "every check below reuses this pass instead of re-reading TIFFs)",
+        len(gt_folders),
+        root,
+    )
 
     instance_rows: List[dict] = []
     quality_rows: List[dict] = []
@@ -330,6 +285,8 @@ def collect(
                 )
 
             slices_processed += 1
+            if slices_processed % 50 == 0:
+                logger.info("  ...%d slice(s) read so far", slices_processed)
 
         for p_dir in pred_folders:
             model_name = extract_model_name(img_dir.name if img_dir else "", p_dir.name)
@@ -365,6 +322,15 @@ def collect(
                         z_index=z_index,
                     )
                 )
+
+                if (z_index + 1) % 50 == 0:
+                    logger.info(
+                        "  ...%d/%d slices matched for %s vs %s",
+                        z_index + 1,
+                        len(gt_files),
+                        gt_dir.name,
+                        p_dir.name,
+                    )
 
     instances_df = pd.DataFrame(instance_rows, columns=_INSTANCE_COLUMNS)
     quality_df = pd.DataFrame(quality_rows, columns=_QUALITY_COLUMNS)

@@ -134,24 +134,28 @@ def _mean_intensity(prop) -> float:
 
 def _one_to_one_match(
     gt_labels: np.ndarray, pr_labels: np.ndarray, min_iou: float = TP_IOU_THRESHOLD
-) -> Tuple[Set[int], Set[int]]:
+) -> Tuple[Set[int], Set[int], Dict[int, int]]:
     """Greedy one-to-one GT<->prediction matching - same algorithm,
     iteration order, and threshold as the lab's own
     ``metrics.compute_object_metrics``: walk predictions in
     label order, and for each one claim the first not-yet-claimed GT
     instance whose IoU meets ``min_iou``.
 
-    Returns ``(matched_gt_ids, matched_pr_ids)``.
+    Returns ``(matched_gt_ids, matched_pr_ids, pairs)``, where ``pairs``
+    maps ``gt_id -> pr_id`` for every claimed pair - callers that need the
+    pairing (not just membership) can read it straight off this single pass
+    instead of re-running the algorithm a second time.
     """
     num_pr = int(pr_labels.max())
     if num_pr == 0:
-        return set(), set()
+        return set(), set(), {}
 
     pr_areas = np.bincount(pr_labels.ravel())
     gt_areas = np.bincount(gt_labels.ravel())
 
     matched_gt_ids: Set[int] = set()
     matched_pr_ids: Set[int] = set()
+    pairs: Dict[int, int] = {}
 
     for pr_id in range(1, num_pr + 1):
         pr_mask = pr_labels == pr_id
@@ -166,9 +170,10 @@ def _one_to_one_match(
             if iou >= min_iou:
                 matched_gt_ids.add(int(gt_id))
                 matched_pr_ids.add(pr_id)
+                pairs[int(gt_id)] = pr_id
                 break
 
-    return matched_gt_ids, matched_pr_ids
+    return matched_gt_ids, matched_pr_ids, pairs
 
 
 def match_instances(
@@ -205,12 +210,26 @@ def match_instances(
     gt_labels = label(gt_arr > 0, connectivity=connectivity)
     pr_labels = label(pr_arr > 0, connectivity=connectivity)
 
-    num_gt = gt_labels.max()
-    if num_gt == 0:
+    if gt_labels.max() == 0:
         return []
 
+    matched_gt_ids, _, _ = _one_to_one_match(gt_labels, pr_labels)
+    return _build_instance_matches(gt_labels, pr_labels, matched_gt_ids, raw_arr)
+
+
+def _build_instance_matches(
+    gt_labels: np.ndarray,
+    pr_labels: np.ndarray,
+    matched_gt_ids: Set[int],
+    raw_arr: Optional[np.ndarray],
+) -> List[InstanceMatch]:
+    """Build one :class:`InstanceMatch` per GT instance from already-labeled
+    arrays and an already-computed ``matched_gt_ids`` set - the shared body
+    of :func:`match_instances`, factored out so
+    :func:`match_and_find_false_positives` can reuse it without labeling or
+    running :func:`_one_to_one_match` a second time.
+    """
     pr_areas = np.bincount(pr_labels.ravel()) if pr_labels.max() > 0 else np.array([0])
-    matched_gt_ids, _ = _one_to_one_match(gt_labels, pr_labels)
 
     if raw_arr is not None:
         props = regionprops(gt_labels, intensity_image=raw_arr)
@@ -266,12 +285,23 @@ def find_false_positives(
     gt_labels = label(gt_arr > 0, connectivity=connectivity)
     pr_labels = label(pr_arr > 0, connectivity=connectivity)
 
-    num_pr = pr_labels.max()
-    if num_pr == 0:
+    if pr_labels.max() == 0:
         return []
 
-    _, matched_pr_ids = _one_to_one_match(gt_labels, pr_labels)
+    _, matched_pr_ids, _ = _one_to_one_match(gt_labels, pr_labels)
+    return _build_false_positives(pr_labels, matched_pr_ids, raw_arr)
 
+
+def _build_false_positives(
+    pr_labels: np.ndarray,
+    matched_pr_ids: Set[int],
+    raw_arr: Optional[np.ndarray],
+) -> List[FalsePositive]:
+    """Build the list of unclaimed predicted instances from an
+    already-labeled ``pr_labels`` array and an already-computed
+    ``matched_pr_ids`` set - the shared body of :func:`find_false_positives`,
+    factored out for reuse by :func:`match_and_find_false_positives`.
+    """
     if raw_arr is not None:
         props = regionprops(pr_labels, intensity_image=raw_arr)
     else:
@@ -292,6 +322,41 @@ def find_false_positives(
         )
 
     return results
+
+
+def match_and_find_false_positives(
+    gt_arr: np.ndarray,
+    pr_arr: np.ndarray,
+    raw_arr: Optional[np.ndarray] = None,
+    connectivity: Optional[int] = None,
+) -> Tuple[List[InstanceMatch], List[FalsePositive], Dict[int, int]]:
+    """Combined, single-pass equivalent of calling :func:`match_instances`
+    and :func:`find_false_positives` back to back on the same arrays, plus
+    the ``gt_id -> pr_id`` pairing for every claimed match.
+
+    Calling those two functions separately labels ``gt_arr``/``pr_arr`` and
+    re-runs :func:`_one_to_one_match` twice each (once per function) - fine
+    in isolation, but ``collect()`` needs all three results (matches, FPs,
+    *and* the pairing) for every slice, which used to mean labeling twice
+    and running the greedy matcher three times per slice (once inside each
+    of ``match_instances``/``find_false_positives``, plus a third time in
+    pipeline.py just to recover the pairing). This does it once.
+    """
+    gt_labels = label(gt_arr > 0, connectivity=connectivity)
+    pr_labels = label(pr_arr > 0, connectivity=connectivity)
+
+    matched_gt_ids, matched_pr_ids, pairs = _one_to_one_match(gt_labels, pr_labels)
+
+    matches = (
+        _build_instance_matches(gt_labels, pr_labels, matched_gt_ids, raw_arr)
+        if gt_labels.max() > 0
+        else []
+    )
+    false_positives = (
+        _build_false_positives(pr_labels, matched_pr_ids, raw_arr) if pr_labels.max() > 0 else []
+    )
+
+    return matches, false_positives, pairs
 
 
 def find_fn_bboxes(
