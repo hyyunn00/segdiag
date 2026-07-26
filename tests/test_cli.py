@@ -102,7 +102,16 @@ def test_cli_run_all_skips_opt_in_fn_visualize_by_default(tmp_path):
 
     result = runner.invoke(
         app,
-        ["run", "all", "--base-dir", str(tmp_path), "--output-dir", str(out_dir), "--format", "csv"],
+        [
+            "run",
+            "all",
+            "--base-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(out_dir),
+            "--format",
+            "csv",
+        ],
     )
 
     assert result.exit_code == 0, result.output

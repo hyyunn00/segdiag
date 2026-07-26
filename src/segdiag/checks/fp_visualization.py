@@ -24,6 +24,7 @@ import random
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import tifffile
 
@@ -122,7 +123,12 @@ class FpVisualizationCheck(Check):
             )
 
             try:
-                sample_data = {"raw": [], "dark": [], "gt": [], "pr": []}
+                sample_data: Dict[str, List[np.ndarray]] = {
+                    "raw": [],
+                    "dark": [],
+                    "gt": [],
+                    "pr": [],
+                }
                 for s_raw, s_dark, s_gt, s_pr in slices_paths:
                     sample_data["raw"].append(
                         crop_with_padding(tifffile.imread(str(s_raw)), target_bbox, pad=40)

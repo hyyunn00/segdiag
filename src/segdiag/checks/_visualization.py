@@ -40,7 +40,9 @@ def normalize_for_display(arr: np.ndarray) -> np.ndarray:
     return arr_float
 
 
-def plot_zcontext_sample(sample_data: Dict[str, List[np.ndarray]], *, title: str, highlight_row: str):
+def plot_zcontext_sample(
+    sample_data: Dict[str, List[np.ndarray]], *, title: str, highlight_row: str
+):
     """Render the 4x5 Z-context grid and return the figure.
 
     ``sample_data`` maps each of ``raw``/``dark``/``gt``/``pr`` to a list of
