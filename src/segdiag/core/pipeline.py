@@ -54,16 +54,6 @@ def _nearest_gt_distance(centroid: tuple, gt_matches: list) -> Optional[float]:
     return min(math.dist(centroid, m.centroid) for m in gt_matches)
 
 
-def _background_stats(gt_arr: np.ndarray, raw_arr: Optional[np.ndarray]) -> tuple:
-    if raw_arr is None:
-        return None, None
-    bg_mask = gt_arr == 0
-    if not bg_mask.any():
-        return None, None
-    bg_values = raw_arr.astype(np.float64)[bg_mask]
-    return float(bg_values.mean()), float(bg_values.std())
-
-
 def _slice_instance_rows(
     gt_arr: np.ndarray,
     pr_arr: np.ndarray,
@@ -78,7 +68,7 @@ def _slice_instance_rows(
     """Build every ``InstanceRecord`` row for one GT/prediction slice pair,
     using the shared :mod:`segdiag.core.matching` primitives.
     """
-    from segdiag.checks.fp_root_cause import classify_fp_subtype
+    from segdiag.checks.fp_root_cause import classify_fp_subtype, compute_local_background_stats
 
     rows: List[dict] = []
 
@@ -110,12 +100,14 @@ def _slice_instance_rows(
             )
         )
 
-    background_mean, background_std = _background_stats(gt_arr, raw_arr) if fps else (None, None)
-
     for fp in fps:
         nearest_gt_distance = _nearest_gt_distance(fp.centroid, gt_matches)
+        background_mean, background_std = (
+            compute_local_background_stats(raw_arr, gt_arr, pr_arr, fp.bbox)
+            if raw_arr is not None
+            else (None, None)
+        )
         fp_subtype = classify_fp_subtype(
-            fp_volume=fp.volume,
             fp_intensity=fp.mean_intensity,
             nearest_gt_distance=nearest_gt_distance,
             background_mean=background_mean,

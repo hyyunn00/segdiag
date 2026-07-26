@@ -2,9 +2,16 @@
 
 Three checks on the GT population (independent of any model's predictions):
 
-- **Volume outliers** (IQR rule): abnormally small cells are often noise
-  mislabeled as a cell; abnormally large ones are often two touching cells
-  annotated as one (a labeling merge).
+- **Volume outliers** (MAD rule on log-volume): abnormally small cells are
+  often noise mislabeled as a cell; abnormally large ones are often two
+  touching cells annotated as one (a labeling merge). Cell volume is
+  heavily right-skewed (log-normal-ish, not normal), so the outlier rule
+  runs on ``log(volume)`` rather than raw volume - an IQR/MAD computed on
+  the raw scale is dominated by the long right tail and both under-flags
+  subtle small-cell outliers and over-flags merely-large-but-typical cells.
+  Uses the median absolute deviation (MAD), not IQR, for the same reason
+  the density-anomaly check below does: a single robust statistic that
+  isn't itself thrown off by the outliers it's trying to detect.
 - **Border truncation**: a GT instance whose bounding box touches the image
   edge is very likely an incomplete cell (cut off by the field of view), and
   shouldn't be scored the same way as a fully-imaged cell.
@@ -20,6 +27,7 @@ import logging
 from typing import List
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 from segdiag.checks.base import Check
@@ -32,6 +40,14 @@ logger = logging.getLogger(__name__)
 #: (with a floor of 1 count, so a perfectly uniform sample never false-flags
 #: on floating point noise).
 DENSITY_ANOMALY_MAD_MULTIPLIER = 3.0
+
+#: Volume-outlier sensitivity: flag a GT cell when log(volume)'s "modified
+#: z-score" (Iglewicz & Hoaglin) exceeds this many MAD-scaled units from the
+#: sample's median log-volume. 3.5 is the standard threshold from that
+#: method - the 0.6745 constant in the modified z-score makes MAD
+#: comparable to a normal distribution's standard deviation.
+VOLUME_OUTLIER_MODIFIED_Z_THRESHOLD = 3.5
+_MAD_CONSISTENCY_CONSTANT = 0.6745
 
 
 class GtAnnotationQualityCheck(Check):
@@ -48,13 +64,28 @@ class GtAnnotationQualityCheck(Check):
             logger.warning("No GT instances collected - nothing to report.")
             return []
 
-        # --- volume outliers (IQR rule) ---
-        q1, q3 = gt["volume"].quantile(0.25), gt["volume"].quantile(0.75)
-        iqr = q3 - q1
-        lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        # --- volume outliers (MAD rule on log-volume) ---
+        log_volume = np.log(gt["volume"].astype(float))
+        median_log = log_volume.median()
+        mad_log = (log_volume - median_log).abs().median()
+        modified_z = _MAD_CONSISTENCY_CONSTANT * (log_volume - median_log) / max(mad_log, 1e-9)
+
+        lower = float(
+            np.exp(
+                median_log
+                - VOLUME_OUTLIER_MODIFIED_Z_THRESHOLD * mad_log / _MAD_CONSISTENCY_CONSTANT
+            )
+        )
+        upper = float(
+            np.exp(
+                median_log
+                + VOLUME_OUTLIER_MODIFIED_Z_THRESHOLD * mad_log / _MAD_CONSISTENCY_CONSTANT
+            )
+        )
+
         gt["volume_outlier"] = "normal"
-        gt.loc[gt["volume"] < lower, "volume_outlier"] = "too_small"
-        gt.loc[gt["volume"] > upper, "volume_outlier"] = "too_large"
+        gt.loc[modified_z < -VOLUME_OUTLIER_MODIFIED_Z_THRESHOLD, "volume_outlier"] = "too_small"
+        gt.loc[modified_z > VOLUME_OUTLIER_MODIFIED_Z_THRESHOLD, "volume_outlier"] = "too_large"
         outliers = gt.loc[
             gt["volume_outlier"] != "normal",
             [
@@ -113,8 +144,8 @@ class GtAnnotationQualityCheck(Check):
 
         fig, axes = plt.subplots(1, 2, figsize=(14, 6))
         axes[0].hist(gt["volume"], bins=30, color="gray")
-        axes[0].axvline(lower, color="r", linestyle="--", label=f"IQR lower={lower:.1f}")
-        axes[0].axvline(upper, color="r", linestyle="--", label=f"IQR upper={upper:.1f}")
+        axes[0].axvline(lower, color="r", linestyle="--", label=f"MAD(log) lower={lower:.1f}")
+        axes[0].axvline(upper, color="r", linestyle="--", label=f"MAD(log) upper={upper:.1f}")
         axes[0].set_title("GT Volume Distribution with Outlier Bounds")
         axes[0].set_xlabel("Volume (voxels)")
         axes[0].legend()
@@ -133,7 +164,7 @@ class GtAnnotationQualityCheck(Check):
                 name="gt_annotation_quality_outliers",
                 table=outliers,
                 figure=fig,
-                metadata={"iqr_bounds": {"lower": float(lower), "upper": float(upper)}},
+                metadata={"log_volume_mad_bounds": {"lower": lower, "upper": upper}},
             ),
             ReportArtifact(name="gt_annotation_quality_border", table=border_summary),
             ReportArtifact(name="gt_annotation_quality_density_anomalies", table=density_anomalies),

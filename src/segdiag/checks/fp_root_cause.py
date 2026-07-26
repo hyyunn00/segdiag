@@ -3,27 +3,38 @@
 Splits false positives - previously just "an unmatched prediction" - into
 three actionable buckets:
 
-- ``noise_fp``: small and background-level intensity - probably a noise
-  speckle, not a real detection problem.
+- ``noise_fp``: intensity is statistically indistinguishable from the
+  *local* background around it - probably a noise speckle, not a real
+  detection problem.
 - ``boundary_split_fp``: sits right next to a real GT cell - probably the
   same cell over-segmented into two pieces, not a hallucination.
-- ``hallucination_fp``: volume/intensity look like a real cell, but there's
-  no GT partner nearby at all - the most concerning category, worth
+- ``hallucination_fp``: has real local contrast against its background, but
+  there's no GT partner nearby at all - the most concerning category, worth
   investigating first.
+
+Volume is deliberately *not* one of the signals here: a false positive's
+size doesn't actually tell you why it's spurious (both a large noise blob
+and a small genuine hallucination exist), whereas local contrast and
+distance-to-nearest-GT are the two properties that directly correspond to
+the two real explanations ("is it just noise" / "is it a fragment of a real
+cell").
 
 :func:`classify_fp_subtype` is a pure, rule-based function with no CLI/report
 dependencies, so :func:`segdiag.core.pipeline.collect` can call it directly
-while scanning to populate ``InstanceRecord.fp_subtype`` - the check itself
-only aggregates and plots the column collect() already filled in.
+while scanning to populate ``InstanceRecord.fp_subtype``, using
+:func:`compute_local_background_stats` (also here, since it feeds directly
+into that rule) to estimate the background around each FP - the check
+itself only aggregates and plots the column collect() already filled in.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 
@@ -32,14 +43,17 @@ from segdiag.core.report import ReportArtifact
 
 logger = logging.getLogger(__name__)
 
-#: Below this volume (voxels), a false positive is a candidate for
-#: "noise_fp" - small enough that it plausibly isn't a real structure.
-SMALL_VOLUME_THRESHOLD = 30
+#: How many pixels of context around a FP's bbox to sample when estimating
+#: its *local* background - large enough to gather a stable mean/std, small
+#: enough that a genuinely local neighbourhood doesn't drift into an
+#: unrelated part of the slice.
+LOCAL_BACKGROUND_PAD = 20
 
-#: How many background standard deviations a FP's mean intensity may sit
-#: away from the local background mean and still count as "background-like"
-#: (i.e. indistinguishable from noise) for the noise_fp rule.
-NOISE_INTENSITY_TOLERANCE_STDS = 1.5
+#: How many local-background standard deviations a FP's mean intensity may
+#: sit away from the local background mean and still count as
+#: "background-like" (i.e. indistinguishable from noise) for the noise_fp
+#: rule.
+NOISE_CONTRAST_STD_THRESHOLD = 1.5
 
 #: Below this centroid-to-nearest-GT distance (pixels), an unmatched
 #: prediction is treated as sitting right next to a real cell - i.e. a
@@ -50,27 +64,57 @@ BOUNDARY_SPLIT_DISTANCE_THRESHOLD = 20.0
 FP_SUBTYPE_ORDER = ["noise_fp", "boundary_split_fp", "hallucination_fp"]
 
 
+def compute_local_background_stats(
+    raw_arr: np.ndarray,
+    gt_arr: np.ndarray,
+    pr_arr: np.ndarray,
+    bbox: Tuple[int, ...],
+    pad: int = LOCAL_BACKGROUND_PAD,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Mean/std raw intensity of the true-background pixels in a
+    ``pad``-pixel neighbourhood around a false positive's ``bbox``.
+
+    "True background" here means pixels that are part of neither *any* GT
+    cell nor *any* predicted instance in that neighbourhood - so neighbouring
+    real cells and the FP itself never contaminate the estimate. Returns
+    ``(None, None)`` if the padded neighbourhood happens to have no such
+    pixels at all (e.g. an unusually crowded field).
+    """
+    min_row, min_col, max_row, max_col = bbox
+    h, w = raw_arr.shape
+    r0, r1 = max(0, min_row - pad), min(h, max_row + pad)
+    c0, c1 = max(0, min_col - pad), min(w, max_col + pad)
+
+    bg_mask = (gt_arr[r0:r1, c0:c1] == 0) & (pr_arr[r0:r1, c0:c1] == 0)
+    if not bg_mask.any():
+        return None, None
+
+    bg_values = raw_arr[r0:r1, c0:c1].astype(np.float64)[bg_mask]
+    return float(bg_values.mean()), float(bg_values.std())
+
+
 def classify_fp_subtype(
-    fp_volume: int,
     fp_intensity: Optional[float],
     nearest_gt_distance: Optional[float],
     background_mean: Optional[float],
     background_std: Optional[float],
 ) -> str:
     """Rule-based FP root-cause classification (see module docstring for the
-    three buckets). Falls through to ``"hallucination_fp"`` whenever there
-    isn't enough information (no raw image, no GT on the slice) to confirm
-    the more specific noise/boundary-split explanations - the conservative
-    choice, since hallucinations are the category most worth a human's
-    attention anyway.
+    three buckets). ``background_mean``/``background_std`` should come from
+    :func:`compute_local_background_stats` (a neighbourhood around this
+    specific FP), not a whole-slice average. Falls through to
+    ``"hallucination_fp"`` whenever there isn't enough information (no raw
+    image, no local background, no GT on the slice) to confirm the more
+    specific noise/boundary-split explanations - the conservative choice,
+    since hallucinations are the category most worth a human's attention
+    anyway.
     """
     if (
-        fp_volume < SMALL_VOLUME_THRESHOLD
-        and fp_intensity is not None
+        fp_intensity is not None
         and background_mean is not None
         and background_std is not None
         and abs(fp_intensity - background_mean)
-        <= NOISE_INTENSITY_TOLERANCE_STDS * max(background_std, 1e-6)
+        <= NOISE_CONTRAST_STD_THRESHOLD * max(background_std, 1e-6)
     ):
         return "noise_fp"
 

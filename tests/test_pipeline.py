@@ -322,21 +322,53 @@ def test_collect_returns_empty_instances_df_when_no_gt_folders(tmp_path):
 
 
 def test_collect_populates_fp_subtype_for_every_false_positive(tmp_path):
-    _write_dataset(tmp_path)
+    # A dedicated dataset with real background variation (not the flat-raw
+    # _write_dataset fixture above) - fp_subtype now hinges on local
+    # background *contrast*, so a perfectly flat raw image makes every FP
+    # indistinguishable from noise_fp regardless of what it's meant to test.
+    shape = (60, 90)
+    sample_dir = tmp_path / "case01"
+    gt_dir = sample_dir / "Flatten_561_mask"
+    raw_dir = sample_dir / "Flatten_561"
+    pred_dir = sample_dir / "Flatten_561_unet_v9_mask.scroll-tif"
+    for d in (gt_dir, raw_dir, pred_dir):
+        d.mkdir(parents=True)
+
+    rng = np.random.default_rng(0)
+    gt = np.zeros(shape, dtype=np.uint8)
+    pr = np.zeros(shape, dtype=np.uint8)
+    raw = rng.normal(20.0, 1.0, shape).astype(np.float32)
+
+    # A matched TP cell, so the slice isn't otherwise degenerate.
+    gt[5:15, 5:15] = 1
+    pr[5:15, 5:15] = 1
+    raw[5:15, 5:15] = 60.0
+
+    # boundary_split_fp: a merged-FN GT cell whose prediction is shifted
+    # just enough to fail one-to-one matching, at a clearly non-background
+    # intensity - sits right next to a real cell, so it's an over-
+    # segmentation split, not noise or a hallucination.
+    gt[30:40, 30:40] = 1
+    pr[33:43, 33:43] = 1  # area 100, centroid ~4px from the GT above
+    raw[33:43, 33:43] = 65.0
+
+    # hallucination_fp: far from any GT, bright/non-background.
+    pr[5:11, 70:76] = 1  # area 36
+    raw[5:11, 70:76] = 90.0
+
+    # noise_fp: far from any GT, left at the ambient background level.
+    pr[50:55, 5:10] = 1  # area 25 (distinct from the other two FPs' volumes)
+
+    tifffile.imwrite(gt_dir / "slice_0000.tif", gt)
+    tifffile.imwrite(pred_dir / "slice_0000.tif", pr)
+    tifffile.imwrite(raw_dir / "slice_0000.tif", raw)
 
     instances_df, _ = collect(tmp_path)
-    case01 = instances_df[instances_df["sample"] == "case01"]
-    fp_rows = case01[case01["role"] == "prediction"]
+    fp_rows = instances_df[instances_df["role"] == "prediction"]
 
-    assert len(fp_rows) == 2
-    assert set(fp_rows["fp_subtype"]) == {"hallucination_fp", "boundary_split_fp"}
-    # The small, far-from-any-GT square (area 36) is unambiguously the
-    # hallucination case; the square right next to the merged-FN GT cell
-    # (area 100, centroid ~7px from it) is the boundary-split case.
-    small_fp = fp_rows[fp_rows["volume"] == 36].iloc[0]
-    near_fp = fp_rows[fp_rows["volume"] == 100].iloc[0]
-    assert small_fp["fp_subtype"] == "hallucination_fp"
-    assert near_fp["fp_subtype"] == "boundary_split_fp"
+    assert len(fp_rows) == 3
+    by_volume = {int(row["volume"]): row["fp_subtype"] for _, row in fp_rows.iterrows()}
+    assert by_volume == {36: "hallucination_fp", 100: "boundary_split_fp", 25: "noise_fp"}
 
 
 def test_collect_gt_role_rows_never_have_fp_subtype(tmp_path):
