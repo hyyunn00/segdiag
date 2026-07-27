@@ -46,7 +46,7 @@ from segdiag.core.io_utils import (
     model_matches_exact,
     resolve_image_dir,
 )
-from segdiag.core.matching import match_and_find_false_positives
+from segdiag.core.matching import cc3d_to_skimage_connectivity, match_and_find_false_positives
 from segdiag.core.schema import ImageQualityRecord, InstanceRecord
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,7 @@ def _volume_instance_rows(
     sample: str,
     model: str,
     slice_names: List[str],
+    connectivity: Optional[int] = None,
 ) -> List[dict]:
     """Build every ``InstanceRecord`` row for one (sample, model) pair,
     labeling the *entire* stacked 3D volume once via
@@ -99,7 +100,12 @@ def _volume_instance_rows(
         z_index = max(0, min(num_z - 1, int(round(z_coord))))
         return z_index, slice_names[z_index]
 
-    matches, fps, pairs = match_and_find_false_positives(gt_vol, pr_vol, raw_arr=raw_vol)
+    matches, fps, pairs = match_and_find_false_positives(
+        gt_vol,
+        pr_vol,
+        raw_arr=raw_vol,
+        connectivity=cc3d_to_skimage_connectivity(connectivity),
+    )
 
     for m in matches:
         z_index, slice_name = _nearest_slice(m.centroid[0])
@@ -210,6 +216,7 @@ def collect(
     model_filter: Optional[str] = None,
     model_exact: Optional[str] = None,
     max_slices: Optional[int] = None,
+    connectivity: Optional[int] = None,
     cache_path: Optional[Path] = None,
     force_refresh: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -242,6 +249,13 @@ def collect(
     since collect() now reads every slice at most once for the whole run
     regardless of how many checks/models follow, one shared budget here
     replaces those six separate ones.
+
+    ``connectivity``(cc3d/MARS 慣例：6/18/26，``None``=skimage 滿連通預設)決定
+    連通元件分析時，兩個體素要多接近才算同一個物件——見
+    ``core.matching.cc3d_to_skimage_connectivity`` 的轉換表。這會直接改變
+    ``gt_count``/``pr_count``/``tp``/``fp``/``fn`` 等所有跟「物件數量」有關的數字，
+    跟 ``SEGDIAG_3D_INSTANCE_FIX.md`` 描述的 2D/3D 計數問題是同一等級的影響範圍——
+    改變這個值之後，務必用 ``--refresh-cache`` 重新掃描，不要沿用舊快取。
     """
     inst_cache = cache_path.with_suffix(".instances.parquet") if cache_path else None
     qual_cache = cache_path.with_suffix(".quality.parquet") if cache_path else None
@@ -401,6 +415,7 @@ def collect(
                     sample=sample_name,
                     model=model_name,
                     slice_names=[f.name for f in common_files],
+                    connectivity=connectivity,
                 )
             )
             logger.info(

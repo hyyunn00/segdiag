@@ -43,6 +43,30 @@ TP_IOU_THRESHOLD = 0.5
 #: another GT instance under the one-to-one matching rule.
 BLIND_FN_IOU_THRESHOLD = 0.05
 
+#: cc3d(MARS 的 3Dfilter 用的套件)用鄰居數表示 3D 連通程度(6/18/26);
+#: skimage.measure.label 用 1..ndim 表示。兩者對 3D 資料指向完全相同的三種
+#: 物理連通程度,這裡是唯一負責轉換的地方——下游一律用 cc3d 的慣例
+#: (6/18/26),不要在別處直接手寫 skimage 的 1/2/3,避免兩種數字系統混用
+#: 卻沒有任何錯誤訊息提醒。
+CC3D_TO_SKIMAGE_CONNECTIVITY_3D: Dict[int, int] = {6: 1, 18: 2, 26: 3}
+
+
+def cc3d_to_skimage_connectivity(cc3d_connectivity: Optional[int]) -> Optional[int]:
+    """把 cc3d 風格的 3D connectivity(6/18/26，MARS `3Dfilter` 用的慣例）
+    轉成 ``skimage.measure.label`` 吃的 1/2/3。``None`` 原樣通過（等同
+    skimage 自己的滿連通預設值）。
+    """
+    if cc3d_connectivity is None:
+        return None
+    try:
+        return CC3D_TO_SKIMAGE_CONNECTIVITY_3D[cc3d_connectivity]
+    except KeyError:
+        raise ValueError(
+            f"connectivity 必須是 {sorted(CC3D_TO_SKIMAGE_CONNECTIVITY_3D)} "
+            f"其中之一（cc3d/MARS 慣例），收到 {cc3d_connectivity}"
+        )
+
+
 #: Machine-readable classification codes returned by
 #: :meth:`InstanceMatch.classify`, and their human-readable chart labels.
 #: Kept as a separate mapping (rather than baking the pretty text into the

@@ -60,6 +60,9 @@ def compute_image_quality_metrics(gt_arr: np.ndarray, raw_arr: np.ndarray) -> di
     from skimage.measure import label as sk_label
     from skimage.measure import regionprops
 
+    # 這裡刻意不吃 collect() 的 connectivity 參數：這是單張 2D slice 的橫切面計數，
+    # cc3d/MARS 的 18-connectivity 是純 3D 概念，不適用於 2D，見
+    # SEGDIAG_MARS_CONNECTIVITY.md 0.3 節。
     gt_labels = sk_label(gt_arr > 0, connectivity=None)
     props = regionprops(gt_labels)
     gt_instance_count = len(props)

@@ -6,11 +6,14 @@ always win: :mod:`segdiag.cli` only falls back to a config value when the
 corresponding flag wasn't passed at all.
 
 ``thresholds`` is parsed and validated here (so a typo in ``segdiag.toml``
-fails fast) but is not yet threaded through to
-:mod:`segdiag.core.matching`/:mod:`segdiag.core.pipeline` or
-:mod:`segdiag.checks.fp_root_cause` - those still use their own module-level
-constants. Wiring configurable thresholds all the way through is future
-work; this module is the config-loading foundation for it.
+fails fast). ``connectivity`` is the first field wired all the way through
+to :mod:`segdiag.core.matching`/:mod:`segdiag.core.pipeline` (via
+``segdiag.cli``'s ``--connectivity`` flag) - see
+``SEGDIAG_MARS_CONNECTIVITY.md``. The rest of ``thresholds`` (``tp_iou``,
+``blind_fn_iou``, ``fp_boundary_split_distance``) is still not threaded
+through to those modules or :mod:`segdiag.checks.fp_root_cause` - those
+still use their own module-level constants. Wiring the remaining
+configurable thresholds all the way through is future work.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ class ThresholdsConfig:
     tp_iou: float = 0.5
     blind_fn_iou: float = 0.05
     fp_boundary_split_distance: float = 20.0
+    connectivity: int = 26  # cc3d 慣例；MARS 對齊時設成 18
 
 
 @dataclass

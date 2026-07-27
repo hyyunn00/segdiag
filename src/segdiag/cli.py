@@ -79,6 +79,14 @@ def run(
     max_slices: Optional[int] = typer.Option(
         None, "--max-slices", help="整個 collect 掃描階段最多處理的 slice 數量（預設不限制）"
     ),
+    connectivity: Optional[int] = typer.Option(
+        None,
+        "--connectivity",
+        help=(
+            "連通元件判定標準（cc3d/MARS 慣例，僅接受 6/18/26）：6=面相鄰、"
+            "18=面+邊相鄰（MARS 的 3Dfilter 用這個）、26=滿連通（目前預設，面+邊+角）。"
+        ),
+    ),
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", help="輸出集中存放的資料夾"),
     format: Optional[str] = typer.Option(
         None, "--format", help="輸出格式，逗號分隔：csv,parquet,html（預設 csv）"
@@ -99,6 +107,10 @@ def run(
         typer.echo(f"Unknown check '{check}'. Available: {_check_names()}", err=True)
         raise typer.Exit(code=1)
 
+    if connectivity is not None and connectivity not in (6, 18, 26):
+        typer.echo(f"--connectivity 必須是 6、18 或 26 之一，收到 {connectivity}", err=True)
+        raise typer.Exit(code=1)
+
     # segdiag.toml only fills in a default for a flag that wasn't passed at
     # all - an explicit CLI flag always wins.
     config = load_config()
@@ -109,6 +121,7 @@ def run(
         Path(config.output.output_dir) if config.output.output_dir else None
     )
     effective_format = format or ",".join(config.output.format) or "csv"
+    effective_connectivity = connectivity or config.thresholds.connectivity
 
     root = base_dir.resolve()
     out_dir = resolve_output_dir(
@@ -137,6 +150,7 @@ def run(
         model_filter=model,
         model_exact=model_exact,
         max_slices=max_slices,
+        connectivity=effective_connectivity,
         cache_path=out_dir / f"{tag}__collect_cache",
         force_refresh=refresh_cache,
     )

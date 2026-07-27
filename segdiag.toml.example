@@ -12,11 +12,13 @@ dark_name = "Flatten_561_dark"
 mask_name = "Flatten_561_mask"
 
 [thresholds]
-# Not yet wired through to segdiag.core.matching/fp_root_cause (see
-# segdiag.core.config's docstring) - reserved for when that lands.
+# tp_iou/blind_fn_iou/fp_boundary_split_distance are not yet wired through to
+# segdiag.core.matching/fp_root_cause (see segdiag.core.config's docstring) -
+# reserved for when that lands. connectivity IS wired through today.
 tp_iou = 0.5
 blind_fn_iou = 0.05
 fp_boundary_split_distance = 20.0
+connectivity = 18  # 對齊 MARS 的 cc3d connectivity=18；預設 26（滿連通）
 
 [output]
 format = ["csv", "html"]

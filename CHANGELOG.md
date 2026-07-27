@@ -4,6 +4,36 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `--connectivity {6,18,26}` CLI flag (and `[thresholds] connectivity` in
+  `segdiag.toml`) to align 3D connected-component labeling with MARS's
+  `cc3d`-based `3Dfilter` (`connectivity=18`), instead of the previously
+  hardcoded skimage full-connectivity default (equivalent to `26`). See
+  `SEGDIAG_MARS_CONNECTIVITY.md` for the cc3d<->skimage mapping and the
+  reasoning. Default remains `26`, so behavior is unchanged unless you pass
+  the new flag/config value.
+  - `segdiag.core.matching.cc3d_to_skimage_connectivity()`: the single
+    conversion point from cc3d's neighbor-count convention (6/18/26) to
+    `skimage.measure.label`'s `1..3`.
+  - `segdiag.core.pipeline.collect()` / `_volume_instance_rows()` now accept
+    a `connectivity` parameter and thread it through to
+    `match_and_find_false_positives()`.
+  - `segdiag.core.config.ThresholdsConfig.connectivity` (default `26`) is
+    the first `thresholds` field actually wired through to
+    `core.matching`/`core.pipeline`.
+  - `checks/raw_image_quality.py`'s per-2D-slice GT instance count
+    deliberately keeps its own hardcoded `connectivity=None` - MARS's
+    18-connectivity is a 3D-only concept and doesn't apply to a single
+    slice.
+
+**This changes the absolute `gt_count`/`pr_count`/`tp`/`fp`/`fn` numbers**
+whenever `--connectivity` differs from the default `26` - the same class of
+impact as the fix in `SEGDIAG_3D_INSTANCE_FIX.md`. Re-run with
+`--refresh-cache` after changing this value; do not compare cached results
+produced under different `connectivity` settings.
+
 ## [1.0.0] - 2026-07-26
 
 **Breaking change.** `segdiag` moved from six independent, argparse-driven

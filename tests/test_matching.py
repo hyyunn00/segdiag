@@ -5,8 +5,15 @@ so they run instantly and require no test data.
 """
 
 import numpy as np
+import pytest
+from skimage.measure import label
 
-from segdiag.core.matching import find_false_positives, find_fn_bboxes, match_instances
+from segdiag.core.matching import (
+    cc3d_to_skimage_connectivity,
+    find_false_positives,
+    find_fn_bboxes,
+    match_instances,
+)
 
 
 def _make_square_mask(shape, top_left, size, value=1):
@@ -243,3 +250,29 @@ def test_matching_handles_many_disjoint_3d_instances_correctly():
 
     assert len(fps) == 1
     assert fps[0].volume == 4 * 5 * 5
+
+
+# --- cc3d/MARS connectivity alignment (SEGDIAG_MARS_CONNECTIVITY.md) -------
+
+
+def test_cc3d_to_skimage_connectivity_mapping():
+    assert cc3d_to_skimage_connectivity(6) == 1
+    assert cc3d_to_skimage_connectivity(18) == 2
+    assert cc3d_to_skimage_connectivity(26) == 3
+    assert cc3d_to_skimage_connectivity(None) is None
+    with pytest.raises(ValueError):
+        cc3d_to_skimage_connectivity(2)  # 不是合法的 cc3d 3D connectivity
+
+
+def test_edge_adjacent_voxels_connect_at_18_but_not_at_6():
+    """cc3d connectivity=18（MARS 用的）應該連通『邊相鄰但非面相鄰』的體素，
+    但 connectivity=6 不應該。"""
+    vol = np.zeros((3, 3, 3), dtype=np.uint8)
+    vol[1, 1, 1] = 1
+    vol[2, 2, 1] = 1  # 邊相鄰（兩個座標各差 1，非面、非純角）
+
+    labels_6 = label(vol, connectivity=cc3d_to_skimage_connectivity(6))
+    labels_18 = label(vol, connectivity=cc3d_to_skimage_connectivity(18))
+
+    assert labels_6.max() == 2  # connectivity=6：視為兩個物件
+    assert labels_18.max() == 1  # connectivity=18：視為同一個物件
