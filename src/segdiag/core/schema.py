@@ -51,6 +51,15 @@ class InstanceRecord:
     best_iou: Optional[float]
     matched_instance_id: Optional[int]
     fp_subtype: Optional[str] = None  # filled in later by the fp_root_cause check
+    #: Whether this instance is claimed under the position-lenient one-to-one
+    #: match (``min_iou=core.matching.LOCATED_IOU_THRESHOLD``), independent
+    #: of ``classification``/``matched_instance_id`` (the strict-IoU match).
+    #: True for a "gt" row means this GT cell was really touched by *some*
+    #: prediction, even if not closely enough to count as strict TP; True
+    #: for a "prediction" row means this otherwise-FP prediction did land on
+    #: a real GT cell rather than pure background noise/hallucination. See
+    #: SEGDIAG_MARS_ALIGNMENT_COMPLETE.md Part 3 / checks.cell_count_agreement.
+    located_matched: Optional[bool] = None
 
 
 @dataclass(frozen=True)

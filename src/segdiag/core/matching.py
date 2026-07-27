@@ -43,6 +43,21 @@ TP_IOU_THRESHOLD = 0.5
 #: another GT instance under the one-to-one matching rule.
 BLIND_FN_IOU_THRESHOLD = 0.05
 
+#: 位置寬鬆版一對一配對的 IoU 門檻（見 SEGDIAG_MARS_ALIGNMENT_COMPLETE.md
+#: Part 3）：只要求「有真的碰到東西」（不是純雜訊/純幻覺），不要求
+#: TP_IOU_THRESHOLD 那種嚴格形狀吻合度。刻意重用 BLIND_FN_IOU_THRESHOLD 的
+#: 數值——同一把尺，不是另一個獨立的門檻家族。
+LOCATED_IOU_THRESHOLD = BLIND_FN_IOU_THRESHOLD
+
+#: MARS 3Dfilter（filter_annotation.py::AnnotationAnalyzer.get_points()）用來
+#: 決定「這個連通元件算不算一顆細胞」的體積門檻（voxel 數，開區間）。上限
+#: 10000 抄自原始判斷式 `if 25 < MarkerS < 10000:`；下限則不是抄程式碼裡的
+#: 25——對 TH 染色，實務操作值是 40（來自實驗室經驗，非 MARS 原始碼），此處
+#: 採用 40 作為預設值。若未來要支援其他標記，下限可能需要不同數字，呼叫端
+#: 可覆寫，不要假設這個預設值放諸四海皆準。
+MARS_MIN_VOLUME = 40  # TH 標記的實務下限（經驗值，非 MARS 程式碼字面值）
+MARS_MAX_VOLUME = 10000  # 與 MARS 原始碼判斷式上限一致
+
 #: cc3d(MARS 的 3Dfilter 用的套件)用鄰居數表示 3D 連通程度(6/18/26);
 #: skimage.measure.label 用 1..ndim 表示。兩者對 3D 資料指向完全相同的三種
 #: 物理連通程度,這裡是唯一負責轉換的地方——下游一律用 cc3d 的慣例
@@ -65,6 +80,61 @@ def cc3d_to_skimage_connectivity(cc3d_connectivity: Optional[int]) -> Optional[i
             f"connectivity 必須是 {sorted(CC3D_TO_SKIMAGE_CONNECTIVITY_3D)} "
             f"其中之一（cc3d/MARS 慣例），收到 {cc3d_connectivity}"
         )
+
+
+def filter_labels_by_volume(
+    labels: np.ndarray,
+    min_volume: Optional[int] = MARS_MIN_VOLUME,
+    max_volume: Optional[int] = MARS_MAX_VOLUME,
+) -> np.ndarray:
+    """把體積不落在 ``(min_volume, max_volume)`` 開區間內的連通元件從
+    ``labels`` 中清除（設回 0），其餘元件重新編號為連續的 1..N（不留
+    「洞」，避免下游 ``np.bincount``/``regionprops`` 浪費空間處理不存在的
+    label）。``None`` 代表該側不設限。
+
+    在呼叫 :func:`match_instances`/:func:`find_false_positives`/
+    :func:`match_and_find_false_positives` 之前，對 ``gt_labels``/
+    ``pr_labels`` **都要**套用同一組門檻——MARS 的實際流程也是對稱套用
+    （不分這個 marker 來自人工標註還是模型偵測），segdiag 對齊的是這個對稱
+    行為。
+    """
+    if min_volume is None and max_volume is None:
+        return labels
+
+    areas = np.bincount(labels.ravel())
+    keep = np.ones(len(areas), dtype=bool)
+    keep[0] = False
+    if min_volume is not None:
+        keep &= areas > min_volume
+    if max_volume is not None:
+        keep &= areas < max_volume
+
+    lut = np.zeros(len(areas), dtype=labels.dtype)
+    lut[keep] = np.arange(1, keep.sum() + 1, dtype=labels.dtype)
+    return lut[labels]
+
+
+def label_and_filter(
+    gt_arr: np.ndarray,
+    pr_arr: np.ndarray,
+    connectivity: Optional[int] = None,
+    min_volume: Optional[int] = MARS_MIN_VOLUME,
+    max_volume: Optional[int] = MARS_MAX_VOLUME,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Label ``gt_arr``/``pr_arr`` and apply :func:`filter_labels_by_volume`
+    to both - the single shared labeling step behind
+    :func:`match_instances`/:func:`find_false_positives`/
+    :func:`match_and_find_false_positives`, and reusable by
+    :mod:`segdiag.core.pipeline` when it needs the same labeled/filtered
+    arrays for a second one-to-one matching pass at a different IoU
+    threshold (see :data:`LOCATED_IOU_THRESHOLD`) without paying for
+    ``skimage.measure.label`` twice on the same 3D volume.
+    """
+    gt_labels = label(gt_arr > 0, connectivity=connectivity)
+    pr_labels = label(pr_arr > 0, connectivity=connectivity)
+    gt_labels = filter_labels_by_volume(gt_labels, min_volume, max_volume)
+    pr_labels = filter_labels_by_volume(pr_labels, min_volume, max_volume)
+    return gt_labels, pr_labels
 
 
 #: Machine-readable classification codes returned by
@@ -223,6 +293,9 @@ def match_instances(
     pr_arr: np.ndarray,
     raw_arr: Optional[np.ndarray] = None,
     connectivity: Optional[int] = None,
+    min_iou: Optional[float] = None,
+    min_volume: Optional[int] = MARS_MIN_VOLUME,
+    max_volume: Optional[int] = MARS_MAX_VOLUME,
 ) -> List[InstanceMatch]:
     """Label connected components in ``gt_arr`` and ``pr_arr`` and compute,
     for every ground-truth instance, its best (maximum) IoU against any
@@ -244,18 +317,31 @@ def match_instances(
         ``None`` (skimage's own default, i.e. full/maximal connectivity -
         8-connected in 2D, 26-connected in 3D), matching the default used
         by ``compute_object_metrics`` in the lab's own ``metrics.py``.
+    min_iou:
+        IoU threshold a prediction must clear to claim a GT instance under
+        the one-to-one matching algorithm. ``None`` (default) keeps the
+        existing behavior of :data:`TP_IOU_THRESHOLD` - pass
+        :data:`LOCATED_IOU_THRESHOLD` for the position-lenient count
+        agreement used by ``checks.cell_count_agreement``.
+    min_volume, max_volume:
+        Open-interval voxel-count bounds applied to both ``gt_arr`` and
+        ``pr_arr`` after labeling (see :func:`filter_labels_by_volume`).
+        Default to the MARS TH-marker thresholds (:data:`MARS_MIN_VOLUME`/
+        :data:`MARS_MAX_VOLUME`) - pass ``None`` for either side to see the
+        raw, unfiltered connected-component counts.
 
     Returns
     -------
     A list of :class:`InstanceMatch`, one per ground-truth instance.
     """
-    gt_labels = label(gt_arr > 0, connectivity=connectivity)
-    pr_labels = label(pr_arr > 0, connectivity=connectivity)
+    gt_labels, pr_labels = label_and_filter(gt_arr, pr_arr, connectivity, min_volume, max_volume)
 
     if gt_labels.max() == 0:
         return []
 
-    matched_gt_ids, _, _ = _one_to_one_match(gt_labels, pr_labels)
+    matched_gt_ids, _, _ = _one_to_one_match(
+        gt_labels, pr_labels, min_iou if min_iou is not None else TP_IOU_THRESHOLD
+    )
     return _build_instance_matches(gt_labels, pr_labels, matched_gt_ids, raw_arr)
 
 
@@ -322,6 +408,9 @@ def find_false_positives(
     pr_arr: np.ndarray,
     raw_arr: Optional[np.ndarray] = None,
     connectivity: Optional[int] = None,
+    min_iou: Optional[float] = None,
+    min_volume: Optional[int] = MARS_MIN_VOLUME,
+    max_volume: Optional[int] = MARS_MAX_VOLUME,
 ) -> List[FalsePositive]:
     """Return every predicted instance that never got claimed as any GT's
     match under the shared one-to-one algorithm - i.e. exactly the
@@ -332,13 +421,14 @@ def find_false_positives(
     whether spurious detections tend to be dim/small (noise) or
     real-looking (a genuine over-segmentation problem).
     """
-    gt_labels = label(gt_arr > 0, connectivity=connectivity)
-    pr_labels = label(pr_arr > 0, connectivity=connectivity)
+    gt_labels, pr_labels = label_and_filter(gt_arr, pr_arr, connectivity, min_volume, max_volume)
 
     if pr_labels.max() == 0:
         return []
 
-    _, matched_pr_ids, _ = _one_to_one_match(gt_labels, pr_labels)
+    _, matched_pr_ids, _ = _one_to_one_match(
+        gt_labels, pr_labels, min_iou if min_iou is not None else TP_IOU_THRESHOLD
+    )
     return _build_false_positives(pr_labels, matched_pr_ids, raw_arr)
 
 
@@ -379,6 +469,9 @@ def match_and_find_false_positives(
     pr_arr: np.ndarray,
     raw_arr: Optional[np.ndarray] = None,
     connectivity: Optional[int] = None,
+    min_iou: Optional[float] = None,
+    min_volume: Optional[int] = MARS_MIN_VOLUME,
+    max_volume: Optional[int] = MARS_MAX_VOLUME,
 ) -> Tuple[List[InstanceMatch], List[FalsePositive], Dict[int, int]]:
     """Combined, single-pass equivalent of calling :func:`match_instances`
     and :func:`find_false_positives` back to back on the same arrays, plus
@@ -392,10 +485,11 @@ def match_and_find_false_positives(
     of ``match_instances``/``find_false_positives``, plus a third time in
     pipeline.py just to recover the pairing). This does it once.
     """
-    gt_labels = label(gt_arr > 0, connectivity=connectivity)
-    pr_labels = label(pr_arr > 0, connectivity=connectivity)
+    gt_labels, pr_labels = label_and_filter(gt_arr, pr_arr, connectivity, min_volume, max_volume)
 
-    matched_gt_ids, matched_pr_ids, pairs = _one_to_one_match(gt_labels, pr_labels)
+    matched_gt_ids, matched_pr_ids, pairs = _one_to_one_match(
+        gt_labels, pr_labels, min_iou if min_iou is not None else TP_IOU_THRESHOLD
+    )
 
     matches = (
         _build_instance_matches(gt_labels, pr_labels, matched_gt_ids, raw_arr)

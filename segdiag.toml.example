@@ -14,11 +14,15 @@ mask_name = "Flatten_561_mask"
 [thresholds]
 # tp_iou/blind_fn_iou/fp_boundary_split_distance are not yet wired through to
 # segdiag.core.matching/fp_root_cause (see segdiag.core.config's docstring) -
-# reserved for when that lands. connectivity IS wired through today.
+# reserved for when that lands. connectivity/min_volume/max_volume ARE wired
+# through today (see SEGDIAG_MARS_CONNECTIVITY.md /
+# SEGDIAG_MARS_ALIGNMENT_COMPLETE.md).
 tp_iou = 0.5
 blind_fn_iou = 0.05
 fp_boundary_split_distance = 20.0
 connectivity = 18  # 對齊 MARS 的 cc3d connectivity=18；預設 26（滿連通）
+min_volume = 40     # MARS TH 標記體積過濾下限（voxel 數，開區間；預設值即此）
+max_volume = 10000  # MARS TH 標記體積過濾上限（voxel 數，開區間；預設值即此）
 
 [output]
 format = ["csv", "html"]

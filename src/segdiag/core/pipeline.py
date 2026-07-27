@@ -46,7 +46,16 @@ from segdiag.core.io_utils import (
     model_matches_exact,
     resolve_image_dir,
 )
-from segdiag.core.matching import cc3d_to_skimage_connectivity, match_and_find_false_positives
+from segdiag.core.matching import (
+    LOCATED_IOU_THRESHOLD,
+    MARS_MAX_VOLUME,
+    MARS_MIN_VOLUME,
+    _build_false_positives,
+    _build_instance_matches,
+    _one_to_one_match,
+    cc3d_to_skimage_connectivity,
+    label_and_filter,
+)
 from segdiag.core.schema import ImageQualityRecord, InstanceRecord
 
 logger = logging.getLogger(__name__)
@@ -71,13 +80,14 @@ def _volume_instance_rows(
     model: str,
     slice_names: List[str],
     connectivity: Optional[int] = None,
+    min_volume: Optional[int] = MARS_MIN_VOLUME,
+    max_volume: Optional[int] = MARS_MAX_VOLUME,
 ) -> List[dict]:
     """Build every ``InstanceRecord`` row for one (sample, model) pair,
-    labeling the *entire* stacked 3D volume once via
-    :func:`segdiag.core.matching.match_and_find_false_positives` - not once
-    per 2D slice. This is the fix for the object-count inflation bug
-    described in ``SEGDIAG_3D_INSTANCE_FIX.md``: a cell spanning several
-    z-slices must be counted once, not once per slice it touches.
+    labeling the *entire* stacked 3D volume once - not once per 2D slice.
+    This is the fix for the object-count inflation bug described in
+    ``SEGDIAG_3D_INSTANCE_FIX.md``: a cell spanning several z-slices must be
+    counted once, not once per slice it touches.
 
     ``gt_vol``/``pr_vol``/``raw_vol`` are ``(Z, Y, X)`` stacks built by
     :func:`collect` from the same ordered ``slice_names`` list, so index
@@ -90,6 +100,15 @@ def _volume_instance_rows(
     ``round(centroid_z)`` (clamped to the volume's bounds) - the single
     slice nearest that instance's 3D center, not "the slice it was found
     on" (a 3D instance has no such single slice).
+
+    Labels/filters the volume once via
+    :func:`segdiag.core.matching.label_and_filter`, then runs the shared
+    one-to-one matcher *twice* on those same labels - once at the strict
+    ``TP_IOU_THRESHOLD`` (drives ``classification``/``matched_instance_id``,
+    unchanged from before) and once at ``LOCATED_IOU_THRESHOLD`` (drives
+    ``located_matched``, see SEGDIAG_MARS_ALIGNMENT_COMPLETE.md Part 3) -
+    instead of relabeling the whole 3D volume a second time just to change
+    the IoU threshold.
     """
     from segdiag.checks.fp_root_cause import classify_fp_subtype, compute_local_background_stats
 
@@ -100,11 +119,24 @@ def _volume_instance_rows(
         z_index = max(0, min(num_z - 1, int(round(z_coord))))
         return z_index, slice_names[z_index]
 
-    matches, fps, pairs = match_and_find_false_positives(
+    gt_labels, pr_labels = label_and_filter(
         gt_vol,
         pr_vol,
-        raw_arr=raw_vol,
         connectivity=cc3d_to_skimage_connectivity(connectivity),
+        min_volume=min_volume,
+        max_volume=max_volume,
+    )
+
+    matched_gt_ids, matched_pr_ids, pairs = _one_to_one_match(gt_labels, pr_labels)
+    matches = (
+        _build_instance_matches(gt_labels, pr_labels, matched_gt_ids, raw_vol)
+        if gt_labels.max() > 0
+        else []
+    )
+    fps = _build_false_positives(pr_labels, matched_pr_ids, raw_vol) if pr_labels.max() > 0 else []
+
+    located_matched_gt_ids, located_matched_pr_ids, _ = _one_to_one_match(
+        gt_labels, pr_labels, min_iou=LOCATED_IOU_THRESHOLD
     )
 
     for m in matches:
@@ -133,6 +165,7 @@ def _volume_instance_rows(
                     classification=m.classify(),
                     best_iou=m.best_iou,
                     matched_instance_id=pairs.get(m.gt_id),
+                    located_matched=m.gt_id in located_matched_gt_ids,
                 )
             )
         )
@@ -176,6 +209,7 @@ def _volume_instance_rows(
                     best_iou=None,
                     matched_instance_id=None,
                     fp_subtype=fp_subtype,
+                    located_matched=fp.pr_id in located_matched_pr_ids,
                 )
             )
         )
@@ -217,6 +251,8 @@ def collect(
     model_exact: Optional[str] = None,
     max_slices: Optional[int] = None,
     connectivity: Optional[int] = None,
+    min_volume: Optional[int] = MARS_MIN_VOLUME,
+    max_volume: Optional[int] = MARS_MAX_VOLUME,
     cache_path: Optional[Path] = None,
     force_refresh: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -256,6 +292,12 @@ def collect(
     ``gt_count``/``pr_count``/``tp``/``fp``/``fn`` 等所有跟「物件數量」有關的數字，
     跟 ``SEGDIAG_3D_INSTANCE_FIX.md`` 描述的 2D/3D 計數問題是同一等級的影響範圍——
     改變這個值之後，務必用 ``--refresh-cache`` 重新掃描，不要沿用舊快取。
+
+    ``min_volume``/``max_volume``(見 ``SEGDIAG_MARS_ALIGNMENT_COMPLETE.md``
+    Part 2)在連通元件標記之後、one-to-one 配對之前，把體積不落在這個開區間
+    內的連通元件濾掉——預設值(``40``/``10000``)是 MARS TH 標記的實務門檻，
+    同樣會直接改變所有計數數字，改變後一樣要 ``--refresh-cache``。傳
+    ``None`` 停用該側過濾。
     """
     inst_cache = cache_path.with_suffix(".instances.parquet") if cache_path else None
     qual_cache = cache_path.with_suffix(".quality.parquet") if cache_path else None
@@ -416,6 +458,8 @@ def collect(
                     model=model_name,
                     slice_names=[f.name for f in common_files],
                     connectivity=connectivity,
+                    min_volume=min_volume,
+                    max_volume=max_volume,
                 )
             )
             logger.info(

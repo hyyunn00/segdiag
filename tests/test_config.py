@@ -17,6 +17,8 @@ def test_load_config_returns_defaults_when_file_missing(tmp_path):
     assert config == SegdiagConfig()
     assert config.dataset.mask_name is None
     assert config.thresholds.tp_iou == 0.5
+    assert config.thresholds.min_volume == 40
+    assert config.thresholds.max_volume == 10000
     assert config.output.format == ["csv"]
 
 
@@ -33,6 +35,8 @@ def test_load_config_parses_all_sections(tmp_path):
         tp_iou = 0.6
         blind_fn_iou = 0.1
         fp_boundary_split_distance = 15.0
+        min_volume = 50
+        max_volume = 8000
 
         [output]
         format = ["csv", "html"]
@@ -47,7 +51,11 @@ def test_load_config_parses_all_sections(tmp_path):
         raw_name="Flatten_561", dark_name="Flatten_561_dark", mask_name="Flatten_561_mask"
     )
     assert config.thresholds == ThresholdsConfig(
-        tp_iou=0.6, blind_fn_iou=0.1, fp_boundary_split_distance=15.0
+        tp_iou=0.6,
+        blind_fn_iou=0.1,
+        fp_boundary_split_distance=15.0,
+        min_volume=50,
+        max_volume=8000,
     )
     assert config.output == OutputConfig(format=["csv", "html"], output_dir="results/")
 

@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **MARS volume-filter alignment** (`SEGDIAG_MARS_ALIGNMENT_COMPLETE.md`
+  Part 2): `--min-volume`/`--max-volume` CLI flags (and
+  `[thresholds] min_volume`/`max_volume` in `segdiag.toml`), defaulting to
+  `40`/`10000` - MARS `3Dfilter/filter_annotation.py`'s
+  `AnnotationAnalyzer.get_points()` open-interval volume gate that decides
+  whether a connected component counts as "one cell." **The `10000` upper
+  bound is copied verbatim from that code's `if 25 < MarkerS < 10000:`
+  check; the `40` lower bound is *not* - it's the TH (tyrosine
+  hydroxylase)-marker operational threshold from lab experience, not
+  `25` as literally written in MARS's source. Don't "fix" this back to `25`
+  if you diff against MARS's code - see the module docstring in
+  `core/matching.py` and the dedicated note below.** Unlike
+  `--connectivity` (which defaults to unchanged behavior), these two
+  **default to the MARS-aligned values**, so `gt_count`/`pr_count`/`tp`/
+  `fp`/`fn` numbers change out of the box - pass `--min-volume 0
+  --max-volume 0` to see unfiltered counts.
+  - `segdiag.core.matching.filter_labels_by_volume()`: drops connected
+    components whose voxel count isn't in `(min_volume, max_volume)` and
+    relabels survivors to a contiguous `1..N`.
+  - `segdiag.core.matching.label_and_filter()`: the new shared
+    label-then-filter step behind `match_instances`/`find_false_positives`/
+    `match_and_find_false_positives`, all three of which gained
+    `min_volume`/`max_volume` parameters (defaulting to the MARS values).
+  - `segdiag.core.pipeline.collect()`/`_volume_instance_rows()` thread
+    `min_volume`/`max_volume` through to the same place `connectivity`
+    already threads through - **re-run with `--refresh-cache` after
+    changing either value; do not compare cached results across different
+    volume-filter settings.**
+- **Position-lenient count agreement** (`SEGDIAG_MARS_ALIGNMENT_COMPLETE.md`
+  Part 3): a new `cell-count-agreement` check answering "if this model's
+  predictions were run through MARS, would the reported cell count agree
+  with GT?" - deliberately *not* just `min(gt_count, pr_count)`, since a
+  model that hallucinates predictions in empty background could still get
+  the raw totals to line up. Reuses the existing one-to-one greedy matcher
+  at a position-lenient `min_iou=0.05` (`LOCATED_IOU_THRESHOLD`, the same
+  bar as a "blind" FN) instead of `obj_f1`'s strict `0.5` shape-fit
+  requirement.
+  - `segdiag.core.matching`: `match_instances`/`find_false_positives`/
+    `match_and_find_false_positives` gained a `min_iou` parameter
+    (`None` default preserves the existing `TP_IOU_THRESHOLD` behavior
+    unchanged).
+  - `segdiag.core.schema.InstanceRecord.located_matched`: whether an
+    instance is claimed under the lenient match, independent of
+    `classification`/`matched_instance_id` (the strict match) - populated
+    by `core.pipeline._volume_instance_rows()`, which now runs the shared
+    one-to-one matcher twice on the same labeled/filtered arrays (once
+    strict, once lenient) instead of relabeling the 3D volume twice.
+  - `segdiag.checks.cell_count_agreement.CellCountAgreementCheck`
+    (`cell-count-agreement`): `located_count_f1` per `(dataset, sample,
+    model)`, macro-averaged across samples as the primary ranking metric
+    (a pooled/summed-first version is reported alongside as a supplement,
+    not the headline number - it lets cross-sample over/under-count errors
+    cancel out and can flatter a model with one badly-off sample). Also
+    emits a `gt_count` vs. `pr_count` scatter (+ `located_pr_count`, the
+    "not pure noise" prediction count) and a Bland-Altman agreement plot.
 - `--connectivity {6,18,26}` CLI flag (and `[thresholds] connectivity` in
   `segdiag.toml`) to align 3D connected-component labeling with MARS's
   `cc3d`-based `3Dfilter` (`connectivity=18`), instead of the previously

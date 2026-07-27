@@ -23,6 +23,19 @@ with `segdiag run all --base-dir ...`. List them (with descriptions, and an
 | `gt-annotation-quality` | Does the GT itself have volume outliers, border-truncated cells, or density anomalies (annotator drift)? | Yes |
 | `fp-root-cause` | Is a false positive noise, a same-cell over-segmentation split, or a genuine hallucination? | Yes |
 | `fp-visualize` | What do the spurious detections actually look like, in 3D context - especially hallucinations? | Opt-in |
+| `cell-count-agreement` | If this model's predictions were run through MARS, would the reported cell count agree with GT? | Yes |
+
+`cell-count-agreement` answers a different question than `obj_f1`: it uses a
+position-*lenient* one-to-one match (`min_iou=0.05`, the same bar as a
+"blind" FN) instead of the strict `min_iou=0.5` shape-fit `obj_f1` requires,
+because the thing being validated here is *counting*, not localization
+accuracy. Comparing `gt_count` to `pr_count` alone isn't enough - a model
+that hallucinates predictions in empty background could still get the total
+right - so `located_count_f1` requires those predictions to actually have
+touched a real cell. Reports both a macro-average (primary ranking metric)
+and a pooled supplement, plus a scatter plot and a Bland-Altman agreement
+plot. See `SEGDIAG_MARS_ALIGNMENT_COMPLETE.md` Part 3 for the full
+reasoning.
 
 `fp-root-cause`'s three buckets - `noise_fp`, `boundary_split_fp`,
 `hallucination_fp` - are computed once during `collect()`

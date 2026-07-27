@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 import tifffile
 
 from segdiag.core.matching import find_false_positives, match_instances
@@ -312,7 +313,10 @@ def test_collect_finds_both_samples_and_all_classifications(tmp_path):
 def test_collect_matches_direct_match_instances_totals(tmp_path):
     _write_dataset(tmp_path)
 
-    instances_df, _ = collect(tmp_path)
+    # This fixture's hallucination FP is only 36 voxels (below
+    # MARS_MIN_VOLUME) - disable the volume filter since this test is about
+    # matching-algorithm totals, not the volume filter itself.
+    instances_df, _ = collect(tmp_path, min_volume=None, max_volume=None)
     case01 = instances_df[instances_df["sample"] == "case01"]
 
     gt_rows = case01[case01["role"] == "gt"]
@@ -484,7 +488,10 @@ def test_collect_populates_fp_subtype_for_every_false_positive(tmp_path):
     tifffile.imwrite(pred_dir / "slice_0000.tif", pr)
     tifffile.imwrite(raw_dir / "slice_0000.tif", raw)
 
-    instances_df, _ = collect(tmp_path)
+    # Two of the three planted FPs (25 and 36 voxels) are below
+    # MARS_MIN_VOLUME - disable the volume filter since this test is about
+    # fp_subtype classification, not the volume filter itself.
+    instances_df, _ = collect(tmp_path, min_volume=None, max_volume=None)
     fp_rows = instances_df[instances_df["role"] == "prediction"]
 
     assert len(fp_rows) == 3
@@ -511,3 +518,136 @@ def test_collect_populates_quality_metrics_per_slice(tmp_path):
     # The synthetic raw arrays are perfectly flat, so every pixel is at the
     # (only) max value.
     assert (quality_df["saturation_pct"] == 100.0).all()
+
+
+# --- MARS volume filter threading (SEGDIAG_MARS_ALIGNMENT_COMPLETE.md Part 2) --
+
+
+def _write_dataset_with_small_and_oversized_instances(root) -> None:
+    """One sample with a normal (area 900) TP cell, a small (area 25, below
+    MARS_MIN_VOLUME) hallucination FP, and an oversized (area 10201, above
+    MARS_MAX_VOLUME) merged blob - exercises both sides of the volume filter
+    end to end through collect().
+    """
+    shape = (200, 200)
+    sample_dir = root / "case01"
+    gt_dir = sample_dir / "Flatten_561_mask"
+    pred_dir = sample_dir / "Flatten_561_unet_v9_mask.scroll-tif"
+    gt_dir.mkdir(parents=True)
+    pred_dir.mkdir(parents=True)
+
+    gt = np.zeros(shape, dtype=np.uint8)
+    pr = np.zeros(shape, dtype=np.uint8)
+
+    gt[5:35, 5:35] = 1  # area 900, matched -> true_positive
+    pr[5:35, 5:35] = 1
+
+    pr[50:55, 50:55] = 1  # area 25 -> hallucination FP, below MARS_MIN_VOLUME
+
+    gt[80:181, 80:181] = 1  # area 101*101=10201, above MARS_MAX_VOLUME
+    # deliberately left unmatched (blind_fn if it survives the filter)
+
+    tifffile.imwrite(gt_dir / "slice_0000.tif", gt)
+    tifffile.imwrite(pred_dir / "slice_0000.tif", pr)
+
+
+def test_collect_default_applies_mars_volume_filter(tmp_path):
+    _write_dataset_with_small_and_oversized_instances(tmp_path)
+
+    instances_df, _ = collect(tmp_path)
+
+    # Only the 900-voxel TP cell survives; the 25-voxel FP and the
+    # 10201-voxel oversized blob are both filtered out by default.
+    assert len(instances_df) == 1
+    assert instances_df.iloc[0]["classification"] == "true_positive"
+    assert instances_df.iloc[0]["volume"] == 900
+
+
+def test_collect_min_volume_max_volume_none_disables_filter(tmp_path):
+    _write_dataset_with_small_and_oversized_instances(tmp_path)
+
+    instances_df, _ = collect(tmp_path, min_volume=None, max_volume=None)
+
+    assert set(instances_df["volume"]) == {900, 25, 10201}
+
+
+def test_collect_custom_min_volume_max_volume_are_honored(tmp_path):
+    _write_dataset_with_small_and_oversized_instances(tmp_path)
+
+    instances_df, _ = collect(tmp_path, min_volume=20, max_volume=11000)
+
+    assert set(instances_df["volume"]) == {900, 25, 10201}
+
+
+# --- located_matched (SEGDIAG_MARS_ALIGNMENT_COMPLETE.md Part 3) ------------
+
+
+def test_volume_instance_rows_true_positive_is_always_located_matched():
+    gt, pr, raw = _synthetic_slice()
+    gt_vol, pr_vol, raw_vol = _as_volume(gt, pr, raw)
+
+    rows = _volume_instance_rows(
+        gt_vol,
+        pr_vol,
+        raw_vol,
+        dataset="ds",
+        sample="case01",
+        model="unet_v9",
+        slice_names=["s.tif"],
+    )
+    tp_rows = [r for r in rows if r["classification"] == "true_positive"]
+
+    assert len(tp_rows) == 1
+    assert tp_rows[0]["located_matched"] is True
+
+
+def test_volume_instance_rows_blind_fn_is_not_located_matched():
+    gt, pr, raw = _synthetic_slice()
+    gt_vol, pr_vol, raw_vol = _as_volume(gt, pr, raw)
+
+    rows = _volume_instance_rows(
+        gt_vol,
+        pr_vol,
+        raw_vol,
+        dataset="ds",
+        sample="case01",
+        model="unet_v9",
+        slice_names=["s.tif"],
+    )
+    blind_fn_rows = [r for r in rows if r["classification"] == "blind_fn"]
+
+    assert len(blind_fn_rows) == 1
+    assert blind_fn_rows[0]["located_matched"] is False
+
+
+def test_volume_instance_rows_merged_fn_at_iou_0_2_is_located_matched_but_not_classified_tp():
+    """The key Part 3 boundary case: an IoU of exactly 0.2 clears
+    LOCATED_IOU_THRESHOLD(0.05) but not TP_IOU_THRESHOLD(0.5) - so this GT
+    instance must be located_matched=True while still classified merged_fn,
+    and its unmatched prediction (an FP under strict matching) must also be
+    located_matched=True since it did touch a real GT cell. The two matching
+    passes are independent and must not overwrite each other.
+    """
+    shape = (60, 60)
+    gt = np.zeros(shape, dtype=np.uint8)
+    pr = np.zeros(shape, dtype=np.uint8)
+    gt[0:30, 0:30] = 1  # area 900
+    pr[20:50, 0:30] = 1  # area 900, row-shifted by 20 -> IoU = 300/1500 = 0.2
+    gt_vol, pr_vol = _as_volume(gt, pr)
+
+    rows = _volume_instance_rows(
+        gt_vol,
+        pr_vol,
+        None,
+        dataset="ds",
+        sample="case01",
+        model="unet_v9",
+        slice_names=["s.tif"],
+    )
+    by_role = {r["role"]: r for r in rows}
+
+    assert by_role["gt"]["best_iou"] == pytest.approx(0.2)
+    assert by_role["gt"]["classification"] == "merged_fn"
+    assert by_role["gt"]["located_matched"] is True
+    assert by_role["prediction"]["classification"] == "false_positive"
+    assert by_role["prediction"]["located_matched"] is True

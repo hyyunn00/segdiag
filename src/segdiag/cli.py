@@ -87,6 +87,22 @@ def run(
             "18=面+邊相鄰（MARS 的 3Dfilter 用這個）、26=滿連通（目前預設，面+邊+角）。"
         ),
     ),
+    min_volume: Optional[int] = typer.Option(
+        None,
+        "--min-volume",
+        help=(
+            "體積過濾下限（voxel 數，開區間，預設 40：TH 標記的實務經驗值，"
+            "非 MARS 原始碼字面值）。設為 0 停用下限過濾。"
+        ),
+    ),
+    max_volume: Optional[int] = typer.Option(
+        None,
+        "--max-volume",
+        help=(
+            "體積過濾上限（voxel 數，開區間，預設 10000，與 MARS 原始碼判斷式"
+            "一致）。設為 0 停用上限過濾。"
+        ),
+    ),
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", help="輸出集中存放的資料夾"),
     format: Optional[str] = typer.Option(
         None, "--format", help="輸出格式，逗號分隔：csv,parquet,html（預設 csv）"
@@ -122,6 +138,18 @@ def run(
     )
     effective_format = format or ",".join(config.output.format) or "csv"
     effective_connectivity = connectivity or config.thresholds.connectivity
+    # `or` would silently fall back to the config default on an explicit
+    # `--min-volume 0`/`--max-volume 0` (0 is falsy) - that's the documented
+    # way to *disable* one side of the filter, so it must win over the
+    # config default, not be treated as "not passed".
+    effective_min_volume: Optional[int] = (
+        min_volume if min_volume is not None else config.thresholds.min_volume
+    )
+    effective_max_volume: Optional[int] = (
+        max_volume if max_volume is not None else config.thresholds.max_volume
+    )
+    effective_min_volume = None if effective_min_volume == 0 else effective_min_volume
+    effective_max_volume = None if effective_max_volume == 0 else effective_max_volume
 
     root = base_dir.resolve()
     out_dir = resolve_output_dir(
@@ -151,6 +179,8 @@ def run(
         model_exact=model_exact,
         max_slices=max_slices,
         connectivity=effective_connectivity,
+        min_volume=effective_min_volume,
+        max_volume=effective_max_volume,
         cache_path=out_dir / f"{tag}__collect_cache",
         force_refresh=refresh_cache,
     )

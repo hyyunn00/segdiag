@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Dict
 
 from segdiag.checks.base import Check
+from segdiag.checks.cell_count_agreement import CellCountAgreementCheck
 from segdiag.checks.detection_probability import DetectionProbabilityCheck
 from segdiag.checks.fn_characteristics import FnCharacteristicsCheck
 from segdiag.checks.fn_contribution import FnContributionCheck
@@ -36,5 +37,6 @@ CHECKS: Dict[str, Check] = {
         GtAnnotationQualityCheck(),
         FpRootCauseCheck(),
         FpVisualizationCheck(),
+        CellCountAgreementCheck(),
     ]
 }

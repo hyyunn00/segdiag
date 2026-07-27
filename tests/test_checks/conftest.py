@@ -111,7 +111,12 @@ def collected_dataset(tmp_path):
     ``argparse.Namespace`` every ``Check.run()`` expects.
     """
     _build_dataset(tmp_path)
-    instances_df, quality_df = collect(tmp_path)
+    # This fixture's planted instances (e.g. the 5x5=25-voxel noise_fp) predate
+    # the MARS volume filter (SEGDIAG_MARS_ALIGNMENT_COMPLETE.md Part 2) and
+    # are deliberately small to exercise decile/quartile binning and FP
+    # root-cause logic, not the volume filter itself - disable it here so
+    # every check test built on this fixture keeps seeing its planted cases.
+    instances_df, quality_df = collect(tmp_path, min_volume=None, max_volume=None)
 
     output_dir = tmp_path / "out"
     output_dir.mkdir()
