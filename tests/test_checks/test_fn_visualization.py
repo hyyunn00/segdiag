@@ -72,6 +72,31 @@ def test_fn_visualization_finds_the_ghost_cell(tmp_path):
     assert artifact.figure is not None
     assert artifact.table.iloc[0]["sample"] == "case01"
     assert artifact.table.iloc[0]["model"] == "unet_v9"
+    assert artifact.table.iloc[0]["volume"] == 100  # the ghost cell is a 10x10 square
+
+
+def test_fn_visualization_respects_fn_volume_filter(tmp_path):
+    _write_dataset(tmp_path)  # its one ghost cell is a 10x10 = 100 voxel square
+    base_kwargs = dict(
+        root=tmp_path,
+        sample=None,
+        model=None,
+        output_dir=tmp_path / "out",
+        mask_name=None,
+        raw_name=None,
+        dark_name="Flatten_561_dark",
+        num_samples=5,
+    )
+
+    # A range that excludes the only ghost cell in the dataset -> no samples.
+    excluding_args = argparse.Namespace(**base_kwargs, fn_min_volume=200, fn_max_volume=None)
+    assert FnVisualizationCheck().run(pd.DataFrame(), pd.DataFrame(), excluding_args) == []
+
+    # A range that includes it -> the sample still comes through.
+    including_args = argparse.Namespace(**base_kwargs, fn_min_volume=50, fn_max_volume=150)
+    artifacts = FnVisualizationCheck().run(pd.DataFrame(), pd.DataFrame(), including_args)
+    assert len(artifacts) == 1
+    assert artifacts[0].table.iloc[0]["volume"] == 100
 
 
 def test_fn_visualization_returns_empty_when_no_ghost_cells(tmp_path):

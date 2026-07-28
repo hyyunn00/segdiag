@@ -56,6 +56,15 @@ class FnVisualizationCheck(Check):
         raw_name: Optional[str] = getattr(args, "raw_name", None) or "Flatten_561"
         dark_name: str = getattr(args, "dark_name", None) or "Flatten_561_dark"
         num_samples: int = getattr(args, "num_samples", None) or 20
+        fn_min_volume: Optional[int] = getattr(args, "fn_min_volume", None)
+        fn_max_volume: Optional[int] = getattr(args, "fn_max_volume", None)
+
+        if fn_min_volume is not None or fn_max_volume is not None:
+            logger.info(
+                "Filtering ghost cells to volume range [%s, %s] voxels",
+                fn_min_volume if fn_min_volume is not None else "-inf",
+                fn_max_volume if fn_max_volume is not None else "+inf",
+            )
 
         gt_folders = find_gt_folders(root, mask_name, sample_filter=args.sample)
         if not gt_folders:
@@ -126,12 +135,18 @@ class FnVisualizationCheck(Check):
                     try:
                         center_gt_arr = tifffile.imread(str(c_gt))
                         center_pr_arr = tifffile.imread(str(c_pr))
-                        fn_bboxes = find_fn_bboxes(center_gt_arr, center_pr_arr, threshold=0.05)
+                        fn_bboxes = find_fn_bboxes(
+                            center_gt_arr,
+                            center_pr_arr,
+                            threshold=0.05,
+                            min_volume=fn_min_volume,
+                            max_volume=fn_max_volume,
+                        )
 
                         if not fn_bboxes:
                             continue
 
-                        target_bbox = random.choice(fn_bboxes)
+                        target_bbox, target_volume = random.choice(fn_bboxes)
 
                         sample_data: dict[str, list[np.ndarray]] = {
                             "raw": [],
@@ -158,7 +173,8 @@ class FnVisualizationCheck(Check):
                             sample_data,
                             title=(
                                 f"FN Sample #{sample_count}  "
-                                f"(Model: {model_name} | Center Slice: {c_gt.name})"
+                                f"(Model: {model_name} | Center Slice: {c_gt.name} | "
+                                f"Volume: {target_volume} voxels)"
                             ),
                             highlight_row="gt",
                         )
@@ -170,6 +186,7 @@ class FnVisualizationCheck(Check):
                                     "sample": parent.name,
                                     "model": model_name,
                                     "slice_name": c_gt.name,
+                                    "volume": target_volume,
                                     "bbox_min_row": target_bbox[0],
                                     "bbox_min_col": target_bbox[1],
                                     "bbox_max_row": target_bbox[2],

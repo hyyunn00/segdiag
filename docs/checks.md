@@ -65,3 +65,13 @@ Both share their plotting/cropping code
 (`segdiag.checks._visualization.plot_zcontext_sample`); the only difference
 is which row gets the center-slice marker - `gt` for a missed cell,
 `pr` for a spurious one - and the title.
+
+`fn-visualize` also takes `--fn-min-volume`/`--fn-max-volume` (voxels,
+inclusive, unset = no limit) to narrow which ghost cells it samples down to
+a specific size range - e.g. `--fn-min-volume 40 --fn-max-volume 100` to
+only look at small misses. This is a second, ad-hoc filter applied on top
+of the ghost cells that already survive the global `--min-volume`/
+`--max-volume` MARS filter (see above) - it doesn't affect any counts/
+metrics, only which samples get rendered. Each rendered sample's voxel
+count is included in its title and in the artifact table's `volume`
+column.

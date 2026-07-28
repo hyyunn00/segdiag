@@ -508,11 +508,29 @@ def find_fn_bboxes(
     pr_arr: np.ndarray,
     threshold: float = BLIND_FN_IOU_THRESHOLD,
     connectivity: Optional[int] = None,
-) -> List[Tuple[int, ...]]:
-    """Convenience wrapper returning only the bounding boxes of GT instances
-    whose best IoU falls below ``threshold`` (used by the visualization step
-    to locate "ghost cell" crops - cells with essentially no overlap at
-    all, a stricter net than the general FN definition above).
+    min_volume: Optional[int] = None,
+    max_volume: Optional[int] = None,
+) -> List[Tuple[Tuple[int, ...], int]]:
+    """Convenience wrapper returning the bounding boxes (with their voxel
+    count) of GT instances whose best IoU falls below ``threshold`` (used by
+    the visualization step to locate "ghost cell" crops - cells with
+    essentially no overlap at all, a stricter net than the general FN
+    definition above).
+
+    ``min_volume``/``max_volume`` (inclusive on both ends) let a caller
+    narrow the result down to ghost cells of a specific size - e.g. only the
+    small ones a reviewer actually wants to look at. This is independent of
+    (and unrelated to) the global MARS-alignment ``min_volume``/
+    ``max_volume`` open-interval filter in :func:`label_and_filter` - that
+    one runs upstream, before ``gt_arr``/``pr_arr`` even reach this
+    function, and decides whether a component is counted as an instance at
+    all. These two are a second, ad-hoc filter over surviving ghost cells.
     """
     matches = match_instances(gt_arr, pr_arr, connectivity=connectivity)
-    return [m.bbox for m in matches if m.best_iou < threshold]
+    return [
+        (m.bbox, m.volume)
+        for m in matches
+        if m.best_iou < threshold
+        and (min_volume is None or m.volume >= min_volume)
+        and (max_volume is None or m.volume <= max_volume)
+    ]

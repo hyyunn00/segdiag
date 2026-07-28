@@ -103,6 +103,21 @@ def run(
             "一致）。設為 0 停用上限過濾。"
         ),
     ),
+    fn_min_volume: Optional[int] = typer.Option(
+        None,
+        "--fn-min-volume",
+        help=(
+            "僅 fn-visualize 使用：只挑選體積（voxel 數，含頭尾）大於等於此值的 "
+            "FN 來產生視覺化圖（預設不限制）。與 --min-volume/--max-volume "
+            "無關 - 那兩個是套用在配對前、影響所有計數的 MARS 過濾，這個只影響 "
+            "fn-visualize 從已通過該過濾的 FN 中要挑哪些來畫圖。"
+        ),
+    ),
+    fn_max_volume: Optional[int] = typer.Option(
+        None,
+        "--fn-max-volume",
+        help="僅 fn-visualize 使用：只挑選體積小於等於此值的 FN 來產生視覺化圖（預設不限制）。",
+    ),
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", help="輸出集中存放的資料夾"),
     format: Optional[str] = typer.Option(
         None, "--format", help="輸出格式，逗號分隔：csv,parquet,html（預設 csv）"
@@ -195,6 +210,8 @@ def run(
         raw_name=effective_raw_name,
         dark_name=effective_dark_name,
         num_samples=num_samples,
+        fn_min_volume=fn_min_volume,
+        fn_max_volume=fn_max_volume,
     )
 
     if check == "all":

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`fn-visualize` size filter**: `--fn-min-volume`/`--fn-max-volume` (voxels,
+  inclusive, unset = no limit) let a reviewer narrow the ghost-cell gallery
+  down to a specific voxel-size range, independent of the global
+  `--min-volume`/`--max-volume` MARS filter (which decides what counts as
+  an instance at all, upstream of this). Each rendered sample's voxel
+  count is now shown in its plot title and in the artifact table's new
+  `volume` column.
+  - `segdiag.core.matching.find_fn_bboxes()` gained `min_volume`/
+    `max_volume` parameters and now returns `(bbox, volume)` pairs instead
+    of bare bboxes.
 - **MARS volume-filter alignment** (`SEGDIAG_MARS_ALIGNMENT_COMPLETE.md`
   Part 2): `--min-volume`/`--max-volume` CLI flags (and
   `[thresholds] min_volume`/`max_volume` in `segdiag.toml`), defaulting to

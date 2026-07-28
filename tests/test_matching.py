@@ -88,6 +88,24 @@ def test_find_fn_bboxes_filters_by_threshold():
     bboxes = find_fn_bboxes(gt, pr, threshold=0.05)
 
     assert len(bboxes) == 1
+    bbox, volume = bboxes[0]
+    assert volume == 64  # 8x8 square
+    assert len(bbox) == 4
+
+
+def test_find_fn_bboxes_filters_by_volume():
+    # Both squares must clear match_instances' own default MARS min_volume
+    # (40) or they'd be dropped upstream in label_and_filter before
+    # find_fn_bboxes ever sees them - this test is only about the extra
+    # min_volume/max_volume narrowing find_fn_bboxes itself applies on top.
+    gt = _make_square_mask((50, 50), (5, 5), 8)  # 64 voxels
+    gt[30:37, 30:37] = 1  # a second, smaller ghost cell: 49 voxels
+    pr = np.zeros((50, 50), dtype=np.uint8)  # nothing matched -> both are FN
+
+    assert len(find_fn_bboxes(gt, pr, threshold=0.05)) == 2
+    assert len(find_fn_bboxes(gt, pr, threshold=0.05, min_volume=50)) == 1
+    assert len(find_fn_bboxes(gt, pr, threshold=0.05, max_volume=50)) == 1
+    assert len(find_fn_bboxes(gt, pr, threshold=0.05, min_volume=100)) == 0
 
 
 # --- one-to-one matching alignment with metrics.compute_object_metrics ------
