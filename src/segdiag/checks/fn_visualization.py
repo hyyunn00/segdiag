@@ -31,6 +31,7 @@ from segdiag.core.io_utils import (
     find_gt_folders,
     find_pred_folders,
     get_corresponding_file,
+    model_matches_exact,
     resolve_image_dir,
 )
 from segdiag.core.matching import find_fn_bboxes
@@ -56,6 +57,7 @@ class FnVisualizationCheck(Check):
         raw_name: Optional[str] = getattr(args, "raw_name", None) or "Flatten_561"
         dark_name: str = getattr(args, "dark_name", None) or "Flatten_561_dark"
         num_samples: int = getattr(args, "num_samples", None) or 20
+        model_exact: Optional[str] = getattr(args, "model_exact", None)
         fn_min_volume: Optional[int] = getattr(args, "fn_min_volume", None)
         fn_max_volume: Optional[int] = getattr(args, "fn_max_volume", None)
 
@@ -103,6 +105,8 @@ class FnVisualizationCheck(Check):
                     break
 
                 model_name = extract_model_name(raw_dir.name, p_dir.name)
+                if not model_matches_exact(model_name, model_exact):
+                    continue
                 logger.info("Searching FNs in: %s (model=%s)", parent.name, model_name)
 
                 valid_indices = list(range(2, num_slices - 2))

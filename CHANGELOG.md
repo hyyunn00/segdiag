@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`fn-visualize` ignored `--model-exact`**: unlike every other check, this
+  one does its own folder scan instead of reading `collect()`'s
+  already-filtered instances table, and that scan only ever applied the
+  substring `--model` filter - `--model-exact` was silently dropped, so a
+  sibling model sharing a naming substring (e.g. `unet_v9_dark` when you
+  asked for `unet_v9`) still got logged as "Searching FNs in..." and had
+  ghost cells rendered from it. It now calls the same
+  `io_utils.model_matches_exact()` gate `collect()` uses, before logging or
+  processing each prediction folder.
+
 ### Added
 - **`fn-visualize` size filter**: `--fn-min-volume`/`--fn-max-volume` (voxels,
   inclusive, unset = no limit) let a reviewer narrow the ghost-cell gallery

@@ -99,6 +99,58 @@ def test_fn_visualization_respects_fn_volume_filter(tmp_path):
     assert artifacts[0].table.iloc[0]["volume"] == 100
 
 
+def test_fn_visualization_respects_model_exact(tmp_path):
+    # Two sibling prediction folders share the "unet_v9" substring - a bare
+    # --model filter would catch both, which is exactly the surprise
+    # model_exact exists to avoid (see io_utils.model_matches_exact).
+    sample_dir = tmp_path / "case01"
+    gt_dir = sample_dir / "Flatten_561_mask"
+    raw_dir = sample_dir / "Flatten_561"
+    dark_dir = sample_dir / "Flatten_561_dark"
+    pred_dir_a = sample_dir / "Flatten_561_unet_v9_mask.scroll-tif"
+    pred_dir_b = sample_dir / "Flatten_561_unet_v9_dark_mask.scroll-tif"
+    for d in (gt_dir, raw_dir, dark_dir, pred_dir_a, pred_dir_b):
+        d.mkdir(parents=True)
+
+    num_slices = 7
+    ghost_z = 3
+
+    for z in range(num_slices):
+        gt = np.zeros(SHAPE, dtype=np.uint8)
+        pr = np.zeros(SHAPE, dtype=np.uint8)
+        raw = np.full(SHAPE, 30.0, dtype=np.float32)
+        dark = np.full(SHAPE, 5.0, dtype=np.float32)
+
+        if z == ghost_z:
+            gt[20:30, 20:30] = 1  # ghost cell in both models' data
+        else:
+            gt[5:10, 5:10] = 1
+            pr[5:10, 5:10] = 1
+
+        tifffile.imwrite(gt_dir / f"slice_{z:04d}.tif", gt)
+        tifffile.imwrite(pred_dir_a / f"slice_{z:04d}.tif", pr)
+        tifffile.imwrite(pred_dir_b / f"slice_{z:04d}.tif", pr)
+        tifffile.imwrite(raw_dir / f"slice_{z:04d}.tif", raw)
+        tifffile.imwrite(dark_dir / f"slice_{z:04d}.tif", dark)
+
+    args = argparse.Namespace(
+        root=tmp_path,
+        sample=None,
+        model=None,
+        model_exact="unet_v9",
+        output_dir=tmp_path / "out",
+        mask_name=None,
+        raw_name=None,
+        dark_name="Flatten_561_dark",
+        num_samples=5,
+    )
+
+    artifacts = FnVisualizationCheck().run(pd.DataFrame(), pd.DataFrame(), args)
+
+    models_seen = {a.table.iloc[0]["model"] for a in artifacts}
+    assert models_seen == {"unet_v9"}
+
+
 def test_fn_visualization_returns_empty_when_no_ghost_cells(tmp_path):
     sample_dir = tmp_path / "case01"
     gt_dir = sample_dir / "Flatten_561_mask"
