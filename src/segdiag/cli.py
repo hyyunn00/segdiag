@@ -23,6 +23,13 @@ import typer
 from rich.logging import RichHandler
 
 from segdiag.checks import CHECKS
+from segdiag.checks.representative_case_gallery import (
+    DEFAULT_N_PER_PATTERN as GALLERY_DEFAULT_N_PER_PATTERN,
+)
+from segdiag.checks.representative_case_gallery import DEFAULT_SEED as GALLERY_DEFAULT_SEED
+from segdiag.checks.representative_case_gallery import (
+    DEFAULT_VOXEL_SIZE_UM as GALLERY_DEFAULT_VOXEL_SIZE_UM,
+)
 from segdiag.core.config import load_config
 from segdiag.core.pipeline import collect
 from segdiag.core.reporting import resolve_output_dir, source_tag
@@ -118,6 +125,44 @@ def run(
         "--fn-max-volume",
         help="僅 fn-visualize 使用：只挑選體積小於等於此值的 FN 來產生視覺化圖（預設不限制）。",
     ),
+    gallery_seed: int = typer.Option(
+        GALLERY_DEFAULT_SEED,
+        "--gallery-seed",
+        help="僅 representative-case-gallery 使用：固定抽樣種子（可重現）。",
+    ),
+    gallery_n_per_pattern: int = typer.Option(
+        GALLERY_DEFAULT_N_PER_PATTERN,
+        "--gallery-n-per-pattern",
+        help="僅 representative-case-gallery 使用：每種型態抽樣數量。",
+    ),
+    gallery_patterns: Optional[str] = typer.Option(
+        None,
+        "--gallery-patterns",
+        help=(
+            "僅 representative-case-gallery 使用：只跑指定型態（逗號分隔），" "預設全部五種都跑。"
+        ),
+    ),
+    intensity_vmin: Optional[float] = typer.Option(
+        None,
+        "--intensity-vmin",
+        help=(
+            "僅 representative-case-gallery 使用：顯示強度視窗下限，未指定時用"
+            "本次實際抽到案例的 1st percentile。"
+        ),
+    ),
+    intensity_vmax: Optional[float] = typer.Option(
+        None,
+        "--intensity-vmax",
+        help=(
+            "僅 representative-case-gallery 使用：顯示強度視窗上限，未指定時用"
+            "本次實際抽到案例的 99th percentile。"
+        ),
+    ),
+    voxel_size_um: float = typer.Option(
+        GALLERY_DEFAULT_VOXEL_SIZE_UM,
+        "--voxel-size-um",
+        help="僅 representative-case-gallery 使用：scale bar 換算用的 µm/voxel。",
+    ),
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", help="輸出集中存放的資料夾"),
     format: Optional[str] = typer.Option(
         None, "--format", help="輸出格式，逗號分隔：csv,parquet,html（預設 csv）"
@@ -212,6 +257,12 @@ def run(
         num_samples=num_samples,
         fn_min_volume=fn_min_volume,
         fn_max_volume=fn_max_volume,
+        gallery_seed=gallery_seed,
+        gallery_n_per_pattern=gallery_n_per_pattern,
+        gallery_patterns=gallery_patterns,
+        intensity_vmin=intensity_vmin,
+        intensity_vmax=intensity_vmax,
+        voxel_size_um=voxel_size_um,
     )
 
     if check == "all":

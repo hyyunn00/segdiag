@@ -10,7 +10,7 @@ of being duplicated across both check modules.
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -41,7 +41,12 @@ def normalize_for_display(arr: np.ndarray) -> np.ndarray:
 
 
 def plot_zcontext_sample(
-    sample_data: Dict[str, List[np.ndarray]], *, title: str, highlight_row: str
+    sample_data: Dict[str, List[np.ndarray]],
+    *,
+    title: str,
+    highlight_row: str,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
 ):
     """Render the 4x5 Z-context grid and return the figure.
 
@@ -50,8 +55,17 @@ def plot_zcontext_sample(
     which row gets a red "+" marker on the center column - ``"gt"`` for a
     missed ground-truth cell (fn-visualize), ``"pr"`` for a spurious
     prediction (fp-visualize).
+
+    ``vmin``/``vmax`` (both required together) display the raw/dark rows
+    against one shared intensity window instead of each panel's own
+    independent ``normalize_for_display`` min-max stretch - used by
+    ``representative_case_gallery`` (SEGDIAG_REPRESENTATIVE_CASE_GALLERY.md
+    section 5.3), which needs every panel in a run to share one window so
+    panels are visually comparable. ``fn-visualize``/``fp-visualize`` don't
+    pass these, so their existing per-panel auto-stretch is unchanged.
     """
     fig, axes = plt.subplots(4, 5, figsize=(20, 16))
+    shared_window = vmin is not None and vmax is not None
 
     for r, mod in enumerate(_MODALITIES):
         for c in range(5):
@@ -60,6 +74,8 @@ def plot_zcontext_sample(
 
             if mod in ("gt", "pr"):
                 ax.imshow(img > 0, cmap="gray", vmin=0, vmax=1)
+            elif shared_window:
+                ax.imshow(img, cmap="gray", vmin=vmin, vmax=vmax)
             else:
                 ax.imshow(normalize_for_display(img), cmap="gray")
 

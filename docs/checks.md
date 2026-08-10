@@ -24,6 +24,7 @@ with `segdiag run all --base-dir ...`. List them (with descriptions, and an
 | `fp-root-cause` | Is a false positive noise, a same-cell over-segmentation split, or a genuine hallucination? | Yes |
 | `fp-visualize` | What do the spurious detections actually look like, in 3D context - especially hallucinations? | Opt-in |
 | `cell-count-agreement` | If this model's predictions were run through MARS, would the reported cell count agree with GT? | Yes |
+| `representative-case-gallery` | What do objectively-selected, reproducibly-sampled example cases of each defect pattern actually look like? | Opt-in |
 
 `cell-count-agreement` answers a different question than `obj_f1`: it uses a
 position-*lenient* one-to-one match (`min_iou=0.05`, the same bar as a
@@ -75,3 +76,45 @@ of the ghost cells that already survive the global `--min-volume`/
 metrics, only which samples get rendered. Each rendered sample's voxel
 count is included in its title and in the artifact table's `volume`
 column.
+
+### `representative-case-gallery`
+
+Produces the report's Figure 5.3.2: objectively-selected, reproducibly
+fixed-seed-sampled example cases of five defect patterns (three FN, two
+FP) - not eyeballed by a reviewer. Each pattern is a rule over columns
+`collect()` already computes:
+
+| Pattern | What it captures | Selection rule |
+|---|---|---|
+| `contour_underestimate` | Matched, but the mask undershoots the real cell's contour | GT row, `classification == "true_positive"`, `0.50 <= best_iou < 0.60` |
+| `no_response` | Model didn't react to the cell at all | GT row, `classification == "blind_fn"` |
+| `z_discontinuity` | Model only caught a thin cross-section of a tall cell | GT row, `classification == "true_positive"`, GT Z-span (`bbox_max_z - bbox_min_z`) >= 3, matched prediction's Z-span == 1 |
+| `background_noise` | Spurious detection indistinguishable from local background | Prediction row, `fp_subtype == "noise_fp"` |
+| `missing_gt_annotation` | Spurious detection that looks like a real, un-annotated cell | Prediction row, `fp_subtype == "hallucination_fp"`, `background_contrast_sigma >= 2.0` |
+
+`--gallery-seed`/`--gallery-n-per-pattern` control the fixed-seed sample
+(`pandas.DataFrame.sample(random_state=seed)` - deliberately not the global
+`random` module `fn-visualize` uses, so repeated runs/patterns never
+interfere with each other's draws); `--gallery-patterns` restricts to a
+comma-separated subset instead of all five. `--intensity-vmin`/
+`--intensity-vmax` pin the shared display window used across every panel
+in the run (default: the 1st/99th percentile of every raw pixel actually
+sampled that run - never each panel auto-stretching independently).
+`--voxel-size-um` (default `1.82`) drives the scale bar's pixel length.
+
+Four patterns render as a grid (rows = sampled cases, columns = Raw / Dark
+Sectioning / GT Overlay / Prediction Overlay); `z_discontinuity` reuses
+`fn-visualize`/`fp-visualize`'s shared Z-context renderer
+(`checks._visualization.plot_zcontext_sample`) instead, since judging a
+Z-discontinuity needs the neighbouring slices, not just the flagged one.
+
+Two fields feed this check that don't exist for any other purpose:
+`InstanceRecord.matched_pred_z_span` (a matched GT row's claiming
+prediction's own Z-span - stored directly on the GT row, since a claimed
+prediction never gets its own "prediction"-role row in this table) and
+`InstanceRecord.background_contrast_sigma` (the continuous
+`|mean_intensity - background_mean| / background_std` ratio
+`fp_root_cause` computes but only ever thresholds into `fp_subtype`, kept
+here as a number so this check can re-threshold it at a stricter 2 sigma).
+Both are populated by `core.pipeline._volume_instance_rows()` for every
+run, regardless of whether this check is ever invoked.

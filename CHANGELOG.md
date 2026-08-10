@@ -6,6 +6,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`representative-case-gallery` check** (`SEGDIAG_REPRESENTATIVE_CASE_GALLERY.md`):
+  produces report Figure 5.3.2 - objectively-selected, fixed-seed-sampled
+  example figures for three FN patterns (`contour_underestimate`,
+  `no_response`, `z_discontinuity`) and two FP patterns (`background_noise`,
+  `missing_gt_annotation`), each chosen by a rule over `collect()`'s
+  existing columns rather than eyeballed by a reviewer. Opt-in (like
+  `fn-visualize`/`fp-visualize`), since it re-reads raw/dark/GT/prediction
+  TIFFs per sampled case.
+  - `segdiag.core.schema.InstanceRecord` gained two fields, both populated
+    by `core.pipeline._volume_instance_rows()` for every run regardless of
+    whether this check ever runs: `matched_pred_z_span` (a matched GT row's
+    claiming-prediction's own Z-span, stored directly on the GT row since a
+    claimed prediction never gets its own "prediction"-role row in this
+    table - a simpler design than the spec's proposed join against a
+    non-existent row) and `background_contrast_sigma` (the continuous
+    `|mean_intensity - background_mean| / background_std` ratio
+    `fp_root_cause` already computes internally but previously only ever
+    collapsed into the `fp_subtype` threshold decision).
+  - `segdiag.checks._visualization.plot_zcontext_sample()` gained optional
+    `vmin`/`vmax` parameters (default `None`, preserving `fn-visualize`/
+    `fp-visualize`'s existing per-panel auto-stretch unchanged) so
+    `representative-case-gallery`'s `z_discontinuity` layout can reuse this
+    renderer while still sharing one intensity window across every panel in
+    the run, per the spec's section 5.3.
+  - New CLI flags (this check only): `--gallery-seed` (default `42`),
+    `--gallery-n-per-pattern` (default `3`), `--gallery-patterns`
+    (comma-separated subset, default all five), `--intensity-vmin`/
+    `--intensity-vmax` (default: 1st/99th percentile of the run's actually-
+    sampled raw pixels), `--voxel-size-um` (default `1.82`, drives the
+    scale bar).
+  - `z_min`/`z_max` from the original spec were **not** added as new
+    fields - `InstanceRecord` already had equivalent `bbox_min_z`/
+    `bbox_max_z` (half-open, like its other bbox fields), reused directly.
+
 ### Fixed
 - **`fn-visualize` ignored `--model-exact`**: unlike every other check, this
   one does its own folder scan instead of reading `collect()`'s

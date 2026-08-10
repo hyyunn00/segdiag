@@ -36,6 +36,7 @@ from typing import Dict, List, Optional, Tuple, cast
 import numpy as np
 import pandas as pd
 import tifffile
+from scipy import ndimage
 
 from segdiag.core.io_utils import (
     extract_model_name,
@@ -139,6 +140,16 @@ def _volume_instance_rows(
         gt_labels, pr_labels, min_iou=LOCATED_IOU_THRESHOLD
     )
 
+    # Z-span (in slices) of every prediction instance, keyed by pr_id - reused
+    # below to fill each matched GT row's `matched_pred_z_span` without a
+    # second regionprops/label pass. `ndimage.find_objects` is already the
+    # same O(N) primitive `_one_to_one_match` uses for its bbox crops.
+    pr_z_spans: Dict[int, int] = {}
+    if pr_labels.max() > 0:
+        for pr_id, slc in enumerate(ndimage.find_objects(pr_labels), start=1):
+            if slc is not None:
+                pr_z_spans[pr_id] = slc[0].stop - slc[0].start
+
     for m in matches:
         z_index, slice_name = _nearest_slice(m.centroid[0])
         rows.append(
@@ -166,6 +177,7 @@ def _volume_instance_rows(
                     best_iou=m.best_iou,
                     matched_instance_id=pairs.get(m.gt_id),
                     located_matched=m.gt_id in located_matched_gt_ids,
+                    matched_pred_z_span=pr_z_spans.get(pairs.get(m.gt_id, -1)),
                 )
             )
         )
@@ -182,6 +194,13 @@ def _volume_instance_rows(
             nearest_gt_distance=nearest_gt_distance,
             background_mean=background_mean,
             background_std=background_std,
+        )
+        background_contrast_sigma = (
+            abs(fp.mean_intensity - background_mean) / max(background_std, 1e-6)
+            if fp.mean_intensity is not None
+            and background_mean is not None
+            and background_std is not None
+            else None
         )
         z_index, slice_name = _nearest_slice(fp.centroid[0])
         rows.append(
@@ -210,6 +229,7 @@ def _volume_instance_rows(
                     matched_instance_id=None,
                     fp_subtype=fp_subtype,
                     located_matched=fp.pr_id in located_matched_pr_ids,
+                    background_contrast_sigma=background_contrast_sigma,
                 )
             )
         )

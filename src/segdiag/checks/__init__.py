@@ -22,6 +22,7 @@ from segdiag.checks.fp_visualization import FpVisualizationCheck
 from segdiag.checks.gt_annotation_quality import GtAnnotationQualityCheck
 from segdiag.checks.iou_distribution import IouDistributionCheck
 from segdiag.checks.raw_image_quality import RawImageQualityCheck
+from segdiag.checks.representative_case_gallery import RepresentativeCaseGalleryCheck
 from segdiag.checks.story_closure import StoryClosureCheck
 
 CHECKS: Dict[str, Check] = {
@@ -38,5 +39,6 @@ CHECKS: Dict[str, Check] = {
         FpRootCauseCheck(),
         FpVisualizationCheck(),
         CellCountAgreementCheck(),
+        RepresentativeCaseGalleryCheck(),
     ]
 }
