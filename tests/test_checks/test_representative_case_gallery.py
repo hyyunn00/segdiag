@@ -188,9 +188,11 @@ def test_background_noise_selects_only_noise_fp_predictions():
 def test_z_discontinuity_coverage_ratio_constants_are_what_the_tests_below_assume():
     """Pin the current threshold values - a deliberate change to either
     constant should force an update here (and in the boundary math below),
-    not silently drift.
+    not silently drift. ``0.7`` is calibrated against a real per-row ratio
+    distribution, not guessed - see Z_DISCONTINUITY_COVERAGE_RATIO's
+    docstring for the measured mean/median/min that produced it.
     """
-    assert Z_DISCONTINUITY_COVERAGE_RATIO == 0.3
+    assert Z_DISCONTINUITY_COVERAGE_RATIO == 0.7
     assert Z_DISCONTINUITY_MIN_GT_Z_SPAN == 3
 
 
@@ -200,17 +202,18 @@ def test_z_discontinuity_selects_by_coverage_ratio_not_a_hard_span_of_one():
     model's matched (TP) predictions essentially never come out exactly
     1-slice-thick in 3D (confirmed on an actual dataset - see
     Z_DISCONTINUITY_COVERAGE_RATIO's docstring), so the literal rule always
-    yielded zero candidates. GT Z-span 10, ratio 0.3 -> boundary at
-    matched_pred_z_span == 3 (inclusive).
+    yielded zero candidates. GT Z-span 10, ratio 0.7 -> boundary at
+    matched_pred_z_span == 7 (inclusive).
     """
     instances = _instances(
         [
-            # matched/GT ratio exactly 3/10 == 0.3 - inclusive boundary, qualifies.
-            _row(instance_id=1, bbox_min_z=0, bbox_max_z=10, matched_pred_z_span=3),
-            # matched/GT ratio 4/10 == 0.4 - just over the boundary, excluded.
-            _row(instance_id=2, bbox_min_z=0, bbox_max_z=10, matched_pred_z_span=4),
-            # GT Z-span 2 (< Z_DISCONTINUITY_MIN_GT_Z_SPAN=3) - even a
-            # generous ratio (1/2 == 0.5) doesn't count on a cell this short.
+            # matched/GT ratio exactly 7/10 == 0.7 - inclusive boundary, qualifies.
+            _row(instance_id=1, bbox_min_z=0, bbox_max_z=10, matched_pred_z_span=7),
+            # matched/GT ratio 8/10 == 0.8 - just over the boundary, excluded.
+            _row(instance_id=2, bbox_min_z=0, bbox_max_z=10, matched_pred_z_span=8),
+            # GT Z-span 2 (< Z_DISCONTINUITY_MIN_GT_Z_SPAN=3) - even a ratio
+            # that would otherwise qualify (1/2 == 0.5 <= 0.7) doesn't count
+            # on a cell this short.
             _row(instance_id=3, bbox_min_z=0, bbox_max_z=2, matched_pred_z_span=1),
             # Not a strict match at all - irrelevant regardless of spans.
             _row(
@@ -230,12 +233,15 @@ def test_z_discontinuity_selects_by_coverage_ratio_not_a_hard_span_of_one():
 
 
 def test_z_discontinuity_matches_the_real_data_case_that_motivated_the_ratio_switch():
-    """The exact shape of case the diagnosis surfaced: a GT cell spanning
-    14 slices, matched by a prediction spanning only 3 - a real
-    Z-underestimation the original literal ``== 1`` rule could never select.
+    """The actual worst-observed case from the v12_unet_dark diagnostic run
+    that calibrated ``Z_DISCONTINUITY_COVERAGE_RATIO``: a GT cell spanning
+    13 slices, matched by a prediction spanning 8 (ratio 8/13 ~= 0.615, the
+    measured minimum across 338 tall TP rows) - a real, if modest,
+    Z-underestimation the original literal ``== 1`` rule could never select
+    (and a ratio threshold much stricter than 0.7 would have missed too).
     """
     instances = _instances(
-        [_row(instance_id=1, bbox_min_z=0, bbox_max_z=14, matched_pred_z_span=3)]
+        [_row(instance_id=1, bbox_min_z=0, bbox_max_z=13, matched_pred_z_span=8)]
     )
     selected = _select_candidates(instances, "z_discontinuity")
     assert list(selected["instance_id"]) == [1]

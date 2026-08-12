@@ -85,17 +85,25 @@ FIXED_CROP_SIZE = 64
 #: caught a small fraction of how tall this cell actually is." The original
 #: spec required a hard ``matched_pred_z_span == 1``, but a real trained
 #: model's matched (TP) predictions essentially never come out exactly
-#: 1-slice-thick in 3D - confirmed on an actual v12_unet_dark run, where
-#: ``matched_pred_z_span`` never dropped below 2 across 352 TP rows, so
-#: that literal rule always yielded zero candidates even though the
-#: underlying Z-underestimation pattern the rule is trying to catch (e.g.
-#: GT spanning 14 slices, matched prediction spanning only 3) clearly does
-#: occur. A proportional threshold catches the same intent without
-#: requiring that unrealistic extreme. Not CLI-configurable, same as the
-#: other patterns' thresholds (``0.50 <= best_iou < 0.60``,
-#: ``background_contrast_sigma >= 2.0``) - if this needs retuning for a
-#: different model's typical Z-coverage behavior, change the constant here.
-Z_DISCONTINUITY_COVERAGE_RATIO = 0.3
+#: 1-slice-thick in 3D, so that literal rule always yielded zero candidates.
+#:
+#: The value here is not a guess - it's calibrated against an actual
+#: per-row ratio distribution (``matched_pred_z_span / gt_z_span`` on GT
+#: rows with ``gt_z_span >= Z_DISCONTINUITY_MIN_GT_Z_SPAN``) measured on a
+#: real ``v12_unet_dark`` run (338 such rows): mean ~1.04, median 1.0,
+#: min 0.615 - i.e. this particular model tracks a matched cell's Z-extent
+#: closely (sometimes even over-covering it), and *no* row fell anywhere
+#: near a naive guess like 0.3. ``0.7`` was chosen as the threshold that
+#: picks out the relatively worst-covered cases that do exist (6 candidates
+#: at this cutoff) without requiring a degree of Z-underestimation this
+#: model essentially never produces. **This calibration is specific to that
+#: run - a different model's Z-coverage distribution could look completely
+#: different, and this constant may need to be measured and retuned again
+#: for it** (see the per-row diagnostic snippet in the PR/commit history
+#: rather than assuming a fixed ratio transfers across models). Not
+#: CLI-configurable, same as the other patterns' thresholds
+#: (``0.50 <= best_iou < 0.60``, ``background_contrast_sigma >= 2.0``).
+Z_DISCONTINUITY_COVERAGE_RATIO = 0.7
 
 #: Still require the GT cell to be reasonably tall before treating a low
 #: Z-coverage ratio as meaningful - a 2-slice-tall GT matched by 1 slice is

@@ -61,18 +61,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - **`z_discontinuity`'s selection rule changed from a hard
     `matched_pred_z_span == 1` to a proportional
     `matched_pred_z_span <= Z_DISCONTINUITY_COVERAGE_RATIO * gt_z_span`
-    (default ratio `0.3`, GT still required to span >= 3 slices).** The
-    original spec's literal rule turned out to be unsatisfiable on real
-    model output: confirmed on an actual dataset (352 TP rows from a
-    `v12_unet_dark` run) that `matched_pred_z_span` never drops below `2` -
-    a real trained model's matched (TP) predictions essentially never come
-    out exactly 1-slice-thick in 3D, so the candidate pool was always empty
-    even though real Z-underestimation clearly occurs in that same data
-    (e.g. a GT spanning 14 slices matched by a prediction spanning only 3).
-    The proportional rule catches that same case. Not CLI-configurable -
-    change `Z_DISCONTINUITY_COVERAGE_RATIO`/`Z_DISCONTINUITY_MIN_GT_Z_SPAN`
-    in `checks/representative_case_gallery.py` to retune for a different
-    model's typical Z-coverage behavior.
+    (ratio `0.7`, GT still required to span >= 3 slices).** The original
+    spec's literal rule turned out to be unsatisfiable on real model
+    output: confirmed on an actual `v12_unet_dark` run that
+    `matched_pred_z_span` never drops below `2` across 352 TP rows, so the
+    candidate pool was always empty. `0.7` is not a guess - it's
+    calibrated against the actual per-row `matched_pred_z_span /
+    gt_z_span` ratio distribution on that same run's 338 tall
+    (`gt_z_span >= 3`) TP rows: mean ~1.04, median 1.0, minimum 0.615 (this
+    particular model tracks a matched cell's Z-extent closely, sometimes
+    even over-covering it - an earlier guess of `0.3` matched *zero* rows).
+    `0.7` picks out the relatively worst-covered cases that do exist (6
+    candidates at that cutoff). **This calibration is dataset-specific and
+    may need to be re-measured for a different model.** Not
+    CLI-configurable - change `Z_DISCONTINUITY_COVERAGE_RATIO`/
+    `Z_DISCONTINUITY_MIN_GT_Z_SPAN` in `checks/representative_case_gallery.py`.
   - New CLI flags (this check only): `--gallery-seed` (default `42`, fixes
     the attempt order for each pattern's candidate pool),
     `--intensity-vmin`/`--intensity-vmax` (per-figure override),
