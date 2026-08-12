@@ -20,7 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `missing_gt_annotation`, columns [Raw | Dark Sectioning | GT Overlay |
     Prediction Overlay] - overlay columns show the raw crop with the mask
     boundary contoured in outline only (green GT / magenta prediction,
-    1px), never filled, so the underlying signal stays visible.
+    1px), never filled, so the underlying signal stays visible. Labels are
+    plain English, not the original figure-legend request's Chinese text -
+    matplotlib's default font has no CJK glyph coverage and a lab analysis
+    server can't be relied on to have a CJK-capable font installed
+    (confirmed missing-glyph/tofu rendering on one), so English labels
+    sidestep the whole problem instead of depending on the runtime
+    environment's fonts.
   - **Panel B** (`case_gallery_panel_b_z_discontinuity`, 3 rows x 5 cols):
     `z_discontinuity` alone, rows [Raw | GT | Prediction], columns Z-2..Z+2.
     Deliberately does *not* reuse `fn-visualize`/`fp-visualize`'s shared
@@ -51,11 +57,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     decides which single candidate each pattern's pool yields),
     `--intensity-vmin`/`--intensity-vmax` (per-figure override),
     `--voxel-size-um` (default `1.82`, drives the scale bar).
-  - A CJK-capable font (PingFang/Heiti/Hiragino/Noto Sans CJK/etc.,
-    whichever is installed - `_configure_cjk_font()`) is preferred for the
-    figures' Chinese panel/row/column labels, since matplotlib's default
-    DejaVu Sans has no CJK glyph coverage and would otherwise silently
-    render them as missing-glyph boxes.
 
 ### Fixed
 - **`fn-visualize` ignored `--model-exact`**: unlike every other check, this

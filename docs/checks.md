@@ -102,16 +102,22 @@ unreadable:
 
 - **Panel A** (`case_gallery_panel_a_general`, 4 rows x 4 cols): one row
   each for `contour_underestimate` / `no_response` / `background_noise` /
-  `missing_gt_annotation`, columns `[原始影像 Raw | Dark Sectioning | GT 疊圖
-  Overlay | 預測疊圖 Prediction Overlay]`. The GT/Prediction overlay columns
-  show the *same* raw crop as the Raw column with the mask boundary
-  contoured on top in outline only (green for GT, magenta for prediction,
-  1px) - never filled, since a filled mask would hide the very signal a
-  reviewer needs to judge the contour against (the whole point of
-  `contour_underestimate`).
+  `missing_gt_annotation`, columns `[Raw | Dark Sectioning | GT Overlay |
+  Prediction Overlay]`. The GT/Prediction overlay columns show the *same*
+  raw crop as the Raw column with the mask boundary contoured on top in
+  outline only (green for GT, magenta for prediction, 1px) - never filled,
+  since a filled mask would hide the very signal a reviewer needs to judge
+  the contour against (the whole point of `contour_underestimate`).
 - **Panel B** (`case_gallery_panel_b_z_discontinuity`, 3 rows x 5 cols):
-  `z_discontinuity` alone, rows `[原始影像 Raw | GT | 預測 Prediction]`,
-  columns Z-2..Z+2 around the flagged GT cell's center slice.
+  `z_discontinuity` alone, rows `[Raw | GT | Prediction]`, columns Z-2..Z+2
+  around the flagged GT cell's center slice.
+
+Panel/row/column labels are plain English, not the original figure-legend
+request's Chinese text - matplotlib's default font has no CJK glyph
+coverage, and a lab analysis server can't be relied on to have a
+CJK-capable font installed (confirmed missing-glyph rendering on one),
+so ASCII labels sidestep the whole problem instead of depending on the
+runtime environment's fonts.
 
 Every panel in each figure is cropped to the same **fixed 64x64 voxel
 window** centered on the flagged instance's centroid (`FIXED_CROP_SIZE` -

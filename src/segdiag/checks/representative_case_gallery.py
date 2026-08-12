@@ -55,7 +55,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tifffile
-from matplotlib import font_manager
 
 from segdiag.checks.base import Check
 from segdiag.core.io_utils import (
@@ -93,67 +92,29 @@ PATTERNS = [
 #: ``z_discontinuity`` removed (which gets its own Panel B).
 _PANEL_A_PATTERNS = [p for p in PATTERNS if p != "z_discontinuity"]
 
+#: English labels - deliberately not the Chinese text from the original
+#: figure-legend request: matplotlib's default font (DejaVu Sans) has no
+#: CJK glyph coverage, and a lab's analysis workstation/server can't be
+#: relied on to have a CJK-capable font installed (confirmed missing-glyph
+#: rendering on a Linux server, even though it renders fine on macOS, which
+#: ships several). Bundling a font or requiring one to be installed would
+#: make the check's output depend on the runtime environment; plain ASCII
+#: labels sidestep the whole problem.
 _PANEL_A_ROW_LABELS = {
-    "contour_underestimate": "輪廓體積低估",
-    "no_response": "完全無反應",
-    "background_noise": "背景雜訊誤判",
-    "missing_gt_annotation": "GT 標註遺漏",
+    "contour_underestimate": "Contour Underestimate",
+    "no_response": "No Response",
+    "background_noise": "Background Noise",
+    "missing_gt_annotation": "Missing GT Annotation",
 }
-_PANEL_A_COL_TITLES = ["原始影像", "Dark Sectioning", "GT 疊圖", "預測疊圖"]
+_PANEL_A_COL_TITLES = ["Raw", "Dark Sectioning", "GT Overlay", "Prediction Overlay"]
 
-_PANEL_B_ROW_TITLES = ["原始影像", "GT", "預測"]
+_PANEL_B_ROW_TITLES = ["Raw", "GT", "Prediction"]
 _PANEL_B_COL_TITLES = ["z-2", "z-1", "z", "z+1", "z+2"]
 _PANEL_B_MODALITIES = ["raw", "gt", "pr"]
 
 #: (gt_dir, raw_dir, dark_dir, pred_dir, sorted gt tif files) for one
 #: (sample, model) pair - mirrors ``FpVisualizationCheck._resolve_folders``.
 _ResolvedFolders = Tuple[Path, Path, Path, Path, List[Path]]
-
-#: Row/column titles above are Chinese (matching the report's own figure
-#: legend), but matplotlib's default font (DejaVu Sans) has no CJK glyph
-#: coverage - without a font override every Chinese character silently
-#: renders as a missing-glyph box. Tried in preference order; the first one
-#: actually installed wins. Covers common macOS (PingFang/Heiti/Hiragino),
-#: Windows (Microsoft JhengHei/YaHei), and Linux (Noto Sans CJK/WenQuanYi)
-#: font names - a bare CI runner with none of these installed still works,
-#: it just falls back to matplotlib's default (with a logged warning) and
-#: Chinese labels will render as boxes there.
-_CJK_FONT_CANDIDATES = [
-    "PingFang TC",
-    "PingFang SC",
-    "Heiti TC",
-    "Heiti SC",
-    "Hiragino Sans GB",
-    "Microsoft JhengHei",
-    "Microsoft YaHei",
-    "Noto Sans CJK TC",
-    "Noto Sans CJK SC",
-    "WenQuanYi Zen Hei",
-    "SimHei",
-    "Arial Unicode MS",
-]
-
-
-def _configure_cjk_font() -> None:
-    """Prefer a CJK-capable font (see ``_CJK_FONT_CANDIDATES``) for this
-    check's Chinese panel labels, if one is installed. Idempotent - safe to
-    call at the top of every ``run()``.
-    """
-    available = {f.name for f in font_manager.fontManager.ttflist}
-    found = next((name for name in _CJK_FONT_CANDIDATES if name in available), None)
-    if found is None:
-        logger.warning(
-            "No CJK-capable font found on this system - representative-case-gallery's "
-            "Chinese panel labels may render as missing-glyph boxes. Install one of %s "
-            "to fix this.",
-            _CJK_FONT_CANDIDATES,
-        )
-        return
-    current = plt.rcParams.get("font.sans-serif", [])
-    if current and current[0] == found:
-        return
-    plt.rcParams["font.sans-serif"] = [found, *[f for f in current if f != found]]
-    plt.rcParams["axes.unicode_minus"] = False
 
 
 def _select_candidates(instances: pd.DataFrame, pattern: str) -> pd.DataFrame:
@@ -451,8 +412,6 @@ class RepresentativeCaseGalleryCheck(Check):
         if instances.empty:
             logger.warning("No collected instances - nothing to sample from.")
             return []
-
-        _configure_cjk_font()
 
         root: Path = args.root
         mask_name: Optional[str] = getattr(args, "mask_name", None) or "Flatten_561_mask"
