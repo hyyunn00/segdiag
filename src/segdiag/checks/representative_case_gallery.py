@@ -296,9 +296,26 @@ def _load_panel_b_case_images(
     gt_dir, raw_dir, dark_dir, pred_dir, gt_files = folders
     z_idx = int(case["z_index"])
     if not (0 <= z_idx < len(gt_files)) or gt_files[z_idx].name != case["slice_name"]:
+        logger.warning(
+            "Panel B: the z_discontinuity candidate's recorded slice (%s, z_index=%d) no "
+            "longer matches this sample's on-disk GT files (%d slices found) - stale cache? "
+            "Try --refresh-cache.",
+            case["slice_name"],
+            z_idx,
+            len(gt_files),
+        )
         return None
     if z_idx < 2 or z_idx > len(gt_files) - 3:
-        return None  # too close to the volume's edge for a full Z-2..Z+2 window
+        logger.warning(
+            "Panel B: the z_discontinuity candidate's center slice (z_index=%d of %d) is too "
+            "close to this sample's volume edge for a full Z-2..Z+2 context window - no other "
+            "z_discontinuity candidate was sampled to fall back to (--gallery-seed only "
+            "controls *which* candidate gets picked within one run, it doesn't retry others "
+            "on failure).",
+            z_idx,
+            len(gt_files),
+        )
+        return None
 
     center_row, center_col = float(case["centroid_y"]), float(case["centroid_x"])
     sample_data: Dict[str, List[np.ndarray]] = {"raw": [], "gt": [], "pr": []}
@@ -308,6 +325,12 @@ def _load_panel_b_case_images(
             raw_f = get_corresponding_file(raw_dir, gtf)
             pred_f = get_corresponding_file(pred_dir, gtf)
             if not (raw_f and pred_f):
+                logger.warning(
+                    "Panel B: missing raw/prediction file for slice %s (z offset %+d from "
+                    "center) - can't build the Z-context window.",
+                    gtf.name,
+                    dz,
+                )
                 return None
             sample_data["raw"].append(
                 _crop_fixed_window(tifffile.imread(str(raw_f)), center_row, center_col)
@@ -499,6 +522,16 @@ class RepresentativeCaseGalleryCheck(Check):
         panel_b_rendered = False
         if z_case is not None:
             folders = _folders_for(z_case["sample"], z_case["model"])
+            if folders is None:
+                logger.warning(
+                    "Panel B: couldn't resolve GT/raw/dark/prediction folders on disk for "
+                    "the z_discontinuity candidate's (sample=%s, model=%s) - check "
+                    "--mask-name/--raw-name/--dark-name match this sample's actual folder "
+                    "names, and that a dark folder exists (folder resolution requires one "
+                    "even though Panel B doesn't render it).",
+                    z_case["sample"],
+                    z_case["model"],
+                )
             sample_data = (
                 _load_panel_b_case_images(z_case, folders) if folders is not None else None
             )
