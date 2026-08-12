@@ -351,6 +351,8 @@ def _render_panel_a(
     loaded_by_pattern: Dict[str, Dict[str, np.ndarray]],
     vmin: float,
     vmax: float,
+    dark_vmin: float,
+    dark_vmax: float,
     voxel_size_um: float,
 ) -> Optional[plt.Figure]:
     """4 rows (one per Panel-A pattern, in ``_PANEL_A_PATTERNS`` order) x 4
@@ -359,6 +361,13 @@ def _render_panel_a(
     with the mask boundary contoured on top (outline only, not filled - a
     filled mask would hide the very signal a reviewer needs to judge the
     contour against, which matters most for ``contour_underestimate``).
+
+    ``vmin``/``vmax`` apply to the Raw/GT-overlay/Prediction-overlay columns
+    (all three display the raw crop); Dark Sectioning gets its own
+    independently-computed ``dark_vmin``/``dark_vmax`` instead of reusing the
+    raw window - it's a different imaging channel with its own intensity
+    range, and stretching it through a window computed from Raw pixel values
+    blows it out (or crushes it) rather than displaying it correctly.
     """
     patterns = [p for p in _PANEL_A_PATTERNS if p in loaded_by_pattern]
     if not patterns:
@@ -366,13 +375,15 @@ def _render_panel_a(
 
     n = len(patterns)
     fig, axes = plt.subplots(n, 4, figsize=(16, 4 * n), squeeze=False)
+    col_windows = [(vmin, vmax), (dark_vmin, dark_vmax), (vmin, vmax), (vmin, vmax)]
 
     for row_idx, pattern in enumerate(patterns):
         imgs = loaded_by_pattern[pattern]
         panel_base = [imgs["raw"], imgs["dark"], imgs["raw"], imgs["raw"]]
         for col_idx, base_img in enumerate(panel_base):
             ax = axes[row_idx, col_idx]
-            ax.imshow(base_img, cmap="gray", vmin=vmin, vmax=vmax)
+            col_vmin, col_vmax = col_windows[col_idx]
+            ax.imshow(base_img, cmap="gray", vmin=col_vmin, vmax=col_vmax)
             if col_idx == 2 and imgs["gt"].any():
                 ax.contour(imgs["gt"] > 0, levels=[0.5], colors="lime", linewidths=1)
             elif col_idx == 3 and imgs["pr"].any():
@@ -473,6 +484,7 @@ class RepresentativeCaseGalleryCheck(Check):
         panel_a_loaded: Dict[str, Dict[str, np.ndarray]] = {}
         panel_a_cases: List[pd.Series] = []
         panel_a_raw: List[np.ndarray] = []
+        panel_a_dark: List[np.ndarray] = []
         for pattern in _PANEL_A_PATTERNS:
             case = picked_cases.get(pattern)
             if case is None:
@@ -486,19 +498,30 @@ class RepresentativeCaseGalleryCheck(Check):
             panel_a_loaded[pattern] = imgs
             panel_a_cases.append(case)
             panel_a_raw.append(imgs["raw"])
+            panel_a_dark.append(imgs["dark"])
 
         panel_a_sampled_patterns = set(panel_a_loaded)
         if panel_a_loaded:
             vmin_a, vmax_a = _resolve_intensity_window(panel_a_raw, cli_vmin, cli_vmax)
+            # Dark Sectioning is a different imaging channel from Raw, with
+            # its own intensity range - it gets its own auto-computed window
+            # (not the CLI --intensity-vmin/vmax override, which is
+            # documented as pinning the Raw-derived window) rather than
+            # inheriting Raw's, which would blow it out/crush it.
+            dark_vmin_a, dark_vmax_a = _resolve_intensity_window(panel_a_dark, None, None)
             logger.info(
                 "representative-case-gallery Panel A: shared intensity window "
-                "vmin=%.3f vmax=%.3f (voxel_size_um=%.3f, seed=%d)",
+                "vmin=%.3f vmax=%.3f (dark vmin=%.3f vmax=%.3f, voxel_size_um=%.3f, seed=%d)",
                 vmin_a,
                 vmax_a,
+                dark_vmin_a,
+                dark_vmax_a,
                 voxel_size_um,
                 seed,
             )
-            fig_a = _render_panel_a(panel_a_loaded, vmin_a, vmax_a, voxel_size_um)
+            fig_a = _render_panel_a(
+                panel_a_loaded, vmin_a, vmax_a, dark_vmin_a, dark_vmax_a, voxel_size_um
+            )
             if fig_a is not None:
                 artifacts.append(
                     ReportArtifact(
@@ -510,6 +533,8 @@ class RepresentativeCaseGalleryCheck(Check):
                             "seed": seed,
                             "vmin": vmin_a,
                             "vmax": vmax_a,
+                            "dark_vmin": dark_vmin_a,
+                            "dark_vmax": dark_vmax_a,
                             "crop_size": FIXED_CROP_SIZE,
                         },
                     )

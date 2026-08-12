@@ -27,6 +27,7 @@ from segdiag.checks.representative_case_gallery import (
     FIXED_CROP_SIZE,
     RepresentativeCaseGalleryCheck,
     _crop_fixed_window,
+    _render_panel_a,
     _resolve_intensity_window,
     _sample_cases,
     _select_candidates,
@@ -316,6 +317,30 @@ def test_crop_fixed_window_slides_to_stay_in_bounds_near_an_edge():
     arr = np.zeros((300, 300), dtype=np.uint8)
     crop = _crop_fixed_window(arr, center_row=2, center_col=2)
     assert crop.shape == (FIXED_CROP_SIZE, FIXED_CROP_SIZE)
+
+
+# --- Regression: Dark Sectioning must not inherit Raw's intensity window ----
+
+
+def test_render_panel_a_gives_dark_column_its_own_intensity_window():
+    """Dark Sectioning is a different imaging channel from Raw, with its own
+    intensity range. Reusing Raw's vmin/vmax for it (the original bug)
+    blows the Dark column out whenever Dark's pixel values sit outside
+    Raw's window - e.g. here Raw ~20, Dark ~200.
+    """
+    raw = np.full((FIXED_CROP_SIZE, FIXED_CROP_SIZE), 20.0)
+    dark = np.full((FIXED_CROP_SIZE, FIXED_CROP_SIZE), 200.0)
+    gt = np.zeros((FIXED_CROP_SIZE, FIXED_CROP_SIZE), dtype=np.uint8)
+    pr = np.zeros((FIXED_CROP_SIZE, FIXED_CROP_SIZE), dtype=np.uint8)
+    loaded = {"no_response": {"raw": raw, "dark": dark, "gt": gt, "pr": pr}}
+
+    fig = _render_panel_a(
+        loaded, vmin=0.0, vmax=50.0, dark_vmin=150.0, dark_vmax=250.0, voxel_size_um=1.82
+    )
+
+    raw_ax, dark_ax = fig.axes[0], fig.axes[1]
+    assert raw_ax.images[0].get_clim() == (0.0, 50.0)
+    assert dark_ax.images[0].get_clim() == (150.0, 250.0)
 
 
 # --- End-to-end wiring: collect() -> check, on a small synthetic 3D dataset -

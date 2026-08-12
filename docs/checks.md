@@ -127,7 +127,12 @@ in a figure is directly visually comparable. Each figure also gets its own
 single shared intensity window (0.1st/99.9th percentile of that figure's
 own sampled raw pixels, unless `--intensity-vmin`/`--intensity-vmax` pin
 it) - never each panel auto-stretching independently - and exactly one
-scale bar, drawn only on the bottom-left panel.
+scale bar, drawn only on the bottom-left panel. Panel A's Dark Sectioning
+column gets its **own** separately-computed window (same 0.1st/99.9th
+percentile method, from that column's own sampled Dark pixels, not
+overridable by `--intensity-vmin`/`--intensity-vmax`) instead of reusing
+Raw's - Dark is a different imaging channel with its own intensity range,
+and stretching it through Raw's window blows it out.
 
 `--gallery-seed` (default `42`) picks which single candidate gets sampled
 out of each pattern's pool (`pandas.DataFrame.sample(random_state=seed)` -

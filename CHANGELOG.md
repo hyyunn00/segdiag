@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     shared intensity window (0.1st/99.9th percentile of that figure's own
     sampled raw pixels, overridable via `--intensity-vmin`/
     `--intensity-vmax`) and exactly one scale bar (bottom-left panel only).
+    Panel A's Dark Sectioning column gets its own separately-computed
+    window (same method, from that column's own sampled Dark pixels, not
+    CLI-overridable) instead of reusing Raw's - Dark is a different imaging
+    channel with its own intensity range, and the original implementation
+    blew it out by stretching it through Raw's window.
   - `segdiag.core.schema.InstanceRecord` gained two fields, both populated
     by `core.pipeline._volume_instance_rows()` for every run regardless of
     whether this check ever runs: `matched_pred_z_span` (a matched GT row's
