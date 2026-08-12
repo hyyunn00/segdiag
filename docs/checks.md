@@ -79,10 +79,13 @@ column.
 
 ### `representative-case-gallery`
 
-Produces the report's Figure 5.3.2: objectively-selected, reproducibly
-fixed-seed-sampled example cases of five defect patterns (three FN, two
-FP) - not eyeballed by a reviewer. Each pattern is a rule over columns
-`collect()` already computes:
+Produces the report's Figure 5.3.2: exactly **one** objectively-selected,
+reproducibly fixed-seed-sampled example case per defect pattern (three FN,
+two FP) - not eyeballed by a reviewer, and not a multi-case gallery (a
+single well-chosen example with a clear sampling rationale reads better in
+a 20-page report than several examples crammed small enough to be
+illegible). Each pattern is a rule over columns `collect()` already
+computes:
 
 | Pattern | What it captures | Selection rule |
 |---|---|---|
@@ -92,21 +95,39 @@ FP) - not eyeballed by a reviewer. Each pattern is a rule over columns
 | `background_noise` | Spurious detection indistinguishable from local background | Prediction row, `fp_subtype == "noise_fp"` |
 | `missing_gt_annotation` | Spurious detection that looks like a real, un-annotated cell | Prediction row, `fp_subtype == "hallucination_fp"`, `background_contrast_sigma >= 2.0` |
 
-`--gallery-seed`/`--gallery-n-per-pattern` control the fixed-seed sample
-(`pandas.DataFrame.sample(random_state=seed)` - deliberately not the global
-`random` module `fn-visualize` uses, so repeated runs/patterns never
-interfere with each other's draws); `--gallery-patterns` restricts to a
-comma-separated subset instead of all five. `--intensity-vmin`/
-`--intensity-vmax` pin the shared display window used across every panel
-in the run (default: the 1st/99th percentile of every raw pixel actually
-sampled that run - never each panel auto-stretching independently).
-`--voxel-size-um` (default `1.82`) drives the scale bar's pixel length.
+Renders as **two figures**, not one figure per pattern - `z_discontinuity`
+needs an entirely different layout (Z-context) than the other four (a
+single flagged slice), so cramming all five into one figure would be
+unreadable:
 
-Four patterns render as a grid (rows = sampled cases, columns = Raw / Dark
-Sectioning / GT Overlay / Prediction Overlay); `z_discontinuity` reuses
-`fn-visualize`/`fp-visualize`'s shared Z-context renderer
-(`checks._visualization.plot_zcontext_sample`) instead, since judging a
-Z-discontinuity needs the neighbouring slices, not just the flagged one.
+- **Panel A** (`case_gallery_panel_a_general`, 4 rows x 4 cols): one row
+  each for `contour_underestimate` / `no_response` / `background_noise` /
+  `missing_gt_annotation`, columns `[原始影像 Raw | Dark Sectioning | GT 疊圖
+  Overlay | 預測疊圖 Prediction Overlay]`. The GT/Prediction overlay columns
+  show the *same* raw crop as the Raw column with the mask boundary
+  contoured on top in outline only (green for GT, magenta for prediction,
+  1px) - never filled, since a filled mask would hide the very signal a
+  reviewer needs to judge the contour against (the whole point of
+  `contour_underestimate`).
+- **Panel B** (`case_gallery_panel_b_z_discontinuity`, 3 rows x 5 cols):
+  `z_discontinuity` alone, rows `[原始影像 Raw | GT | 預測 Prediction]`,
+  columns Z-2..Z+2 around the flagged GT cell's center slice.
+
+Every panel in each figure is cropped to the same **fixed 64x64 voxel
+window** centered on the flagged instance's centroid (`FIXED_CROP_SIZE` -
+matches the model's training patch size, ~116 um field of view at the
+default voxel size) - a fixed size, not a bbox-derived one, so every panel
+in a figure is directly visually comparable. Each figure also gets its own
+single shared intensity window (0.1st/99.9th percentile of that figure's
+own sampled raw pixels, unless `--intensity-vmin`/`--intensity-vmax` pin
+it) - never each panel auto-stretching independently - and exactly one
+scale bar, drawn only on the bottom-left panel.
+
+`--gallery-seed` (default `42`) picks which single candidate gets sampled
+out of each pattern's pool (`pandas.DataFrame.sample(random_state=seed)` -
+deliberately not the global `random` module `fn-visualize` uses, so
+repeated calls never interfere with each other's draws). `--voxel-size-um`
+(default `1.82`) drives the scale bar's pixel length.
 
 Two fields feed this check that don't exist for any other purpose:
 `InstanceRecord.matched_pred_z_span` (a matched GT row's claiming
@@ -118,3 +139,10 @@ prediction never gets its own "prediction"-role row in this table) and
 here as a number so this check can re-threshold it at a stricter 2 sigma).
 Both are populated by `core.pipeline._volume_instance_rows()` for every
 run, regardless of whether this check is ever invoked.
+
+A `case_gallery_sampling_summary` table is always emitted alongside the
+figures, listing every pattern's candidate-pool size, seed, and whether a
+case actually got rendered (`sampled_count` 0 or 1) - the numbers a figure
+caption needs, so a missing pattern (empty candidate pool, or its case's
+TIFFs no longer resolve on disk) is visible in the table even though the
+other panel still renders.

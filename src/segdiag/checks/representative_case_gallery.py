@@ -1,19 +1,35 @@
 """Representative case gallery for report Figure 5.3.2: 3 FN patterns + 2 FP
 patterns, each selected by an objective, reproducible rule (not eyeballed by
 a reviewer), then fixed-seed sampled. See
-``SEGDIAG_REPRESENTATIVE_CASE_GALLERY.md`` for the full spec this
-implements (filter criteria per pattern, layout design, validation
-checklist).
+``SEGDIAG_REPRESENTATIVE_CASE_GALLERY.md`` for the filter-criteria spec this
+implements; the rendering layout follows a later, more specific figure-legend
+request that superseded the original doc's "one figure per pattern" design:
+
+- **Panel A** (4 rows x 4 cols): the four patterns that read as a single
+  flagged instance - ``contour_underestimate``/``no_response``/
+  ``background_noise``/``missing_gt_annotation`` - one row each, columns
+  [Raw | Dark Sectioning | GT Overlay | Prediction Overlay].
+- **Panel B** (3 rows x 5 cols): ``z_discontinuity`` alone, which needs
+  Z-context instead - rows [Raw | GT | Prediction], columns Z-2..Z+2.
+
+Exactly **one** example per pattern (not a sampled gallery of several) - a
+single well-chosen, objectively-selected case with a clear sampling
+rationale is more persuasive in a 20-page report than several examples
+crammed small enough to be illegible. ``--gallery-seed`` still matters: it's
+what picks *which* one candidate out of the pool, reproducibly.
 
 Unlike most checks, this one re-reads raw/dark/GT/prediction TIFFs to render
 image panels - architecturally closer to ``fn_visualization.py``/
-``fp_visualization.py`` (which also re-read TIFFs for dynamically-cropped
-Z-context) than the purely tabular checks.
+``fp_visualization.py`` than the purely tabular checks, though it does not
+reuse their shared Z-context renderer: this figure's row/column layout,
+overlay style (contour outlines, not the plain binary masks fn/fp-visualize
+show), fixed crop window, and per-figure shared intensity window are all
+different enough that forcing a shared renderer would cost more in
+conditional branches than it saves in duplication.
 
-Two deliberate departures from the original spec, both because the actual
-schema/table shape turned out to differ from what the spec assumed (per its
-own instruction to verify current state before coding, not assume the
-described fields already/don't already exist):
+Two departures from the original spec's data-layer plan, both because the
+actual schema/table shape turned out to differ from what the spec assumed
+(per its own instruction to verify current state before coding):
 
 - ``z_min``/``z_max`` aren't separate fields - ``InstanceRecord`` already had
   ``bbox_min_z``/``bbox_max_z`` (half-open, like all its other bbox fields),
@@ -23,10 +39,9 @@ described fields already/don't already exist):
   prediction's Z-span. That row doesn't exist: a prediction claimed by a GT
   match never gets its own "prediction"-role row in this table (only
   unmatched predictions/false positives do). Instead,
-  ``core.pipeline._volume_instance_rows`` now stores the matched
-  prediction's Z-span directly on the GT row as
-  ``matched_pred_z_span`` (see ``core.schema.InstanceRecord``), so no join
-  is needed at all.
+  ``core.pipeline._volume_instance_rows`` stores the matched prediction's
+  Z-span directly on the GT row as ``matched_pred_z_span`` (see
+  ``core.schema.InstanceRecord``), so no join is needed at all.
 """
 
 from __future__ import annotations
@@ -40,8 +55,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tifffile
+from matplotlib import font_manager
 
-from segdiag.checks._visualization import crop_with_padding, plot_zcontext_sample
 from segdiag.checks.base import Check
 from segdiag.core.io_utils import (
     extract_model_name,
@@ -56,9 +71,15 @@ from segdiag.core.report import ReportArtifact
 logger = logging.getLogger(__name__)
 
 DEFAULT_SEED = 42
-DEFAULT_N_PER_PATTERN = 3
 DEFAULT_VOXEL_SIZE_UM = 1.82
 SCALE_BAR_LENGTH_UM = 10.0
+
+#: Fixed crop window (voxels), centered on the flagged instance's centroid -
+#: identical for all four Panel-A patterns and for Panel B, so panels are
+#: directly visually comparable instead of each auto-sizing to its own bbox.
+#: Matches the model's training patch size (also gives ~116 um field of view
+#: at the default 1.82 um/voxel).
+FIXED_CROP_SIZE = 64
 
 PATTERNS = [
     "contour_underestimate",
@@ -68,9 +89,71 @@ PATTERNS = [
     "missing_gt_annotation",
 ]
 
+#: Panel A's row order - deliberately the same order as ``PATTERNS`` with
+#: ``z_discontinuity`` removed (which gets its own Panel B).
+_PANEL_A_PATTERNS = [p for p in PATTERNS if p != "z_discontinuity"]
+
+_PANEL_A_ROW_LABELS = {
+    "contour_underestimate": "輪廓體積低估",
+    "no_response": "完全無反應",
+    "background_noise": "背景雜訊誤判",
+    "missing_gt_annotation": "GT 標註遺漏",
+}
+_PANEL_A_COL_TITLES = ["原始影像", "Dark Sectioning", "GT 疊圖", "預測疊圖"]
+
+_PANEL_B_ROW_TITLES = ["原始影像", "GT", "預測"]
+_PANEL_B_COL_TITLES = ["z-2", "z-1", "z", "z+1", "z+2"]
+_PANEL_B_MODALITIES = ["raw", "gt", "pr"]
+
 #: (gt_dir, raw_dir, dark_dir, pred_dir, sorted gt tif files) for one
 #: (sample, model) pair - mirrors ``FpVisualizationCheck._resolve_folders``.
 _ResolvedFolders = Tuple[Path, Path, Path, Path, List[Path]]
+
+#: Row/column titles above are Chinese (matching the report's own figure
+#: legend), but matplotlib's default font (DejaVu Sans) has no CJK glyph
+#: coverage - without a font override every Chinese character silently
+#: renders as a missing-glyph box. Tried in preference order; the first one
+#: actually installed wins. Covers common macOS (PingFang/Heiti/Hiragino),
+#: Windows (Microsoft JhengHei/YaHei), and Linux (Noto Sans CJK/WenQuanYi)
+#: font names - a bare CI runner with none of these installed still works,
+#: it just falls back to matplotlib's default (with a logged warning) and
+#: Chinese labels will render as boxes there.
+_CJK_FONT_CANDIDATES = [
+    "PingFang TC",
+    "PingFang SC",
+    "Heiti TC",
+    "Heiti SC",
+    "Hiragino Sans GB",
+    "Microsoft JhengHei",
+    "Microsoft YaHei",
+    "Noto Sans CJK TC",
+    "Noto Sans CJK SC",
+    "WenQuanYi Zen Hei",
+    "SimHei",
+    "Arial Unicode MS",
+]
+
+
+def _configure_cjk_font() -> None:
+    """Prefer a CJK-capable font (see ``_CJK_FONT_CANDIDATES``) for this
+    check's Chinese panel labels, if one is installed. Idempotent - safe to
+    call at the top of every ``run()``.
+    """
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    found = next((name for name in _CJK_FONT_CANDIDATES if name in available), None)
+    if found is None:
+        logger.warning(
+            "No CJK-capable font found on this system - representative-case-gallery's "
+            "Chinese panel labels may render as missing-glyph boxes. Install one of %s "
+            "to fix this.",
+            _CJK_FONT_CANDIDATES,
+        )
+        return
+    current = plt.rcParams.get("font.sans-serif", [])
+    if current and current[0] == found:
+        return
+    plt.rcParams["font.sans-serif"] = [found, *[f for f in current if f != found]]
+    plt.rcParams["axes.unicode_minus"] = False
 
 
 def _select_candidates(instances: pd.DataFrame, pattern: str) -> pd.DataFrame:
@@ -100,7 +183,7 @@ def _select_z_discontinuity_candidates(instances: pd.DataFrame) -> pd.DataFrame:
     spanning >= 3 - i.e. the model responded to just a thin cross-section of
     a tall cell rather than the whole thing.
 
-    Bbox fields are half-open (``bbox_max_* `` is exclusive, matching
+    Bbox fields are half-open (``bbox_max_*`` is exclusive, matching
     ``skimage.measure.regionprops``), so a Z-span is ``max - min`` with no
     ``+1`` - a single-slice instance already has ``bbox_max_z == bbox_min_z + 1``.
     """
@@ -141,9 +224,11 @@ def _sample_cases(candidates: pd.DataFrame, pattern: str, n: int, seed: int) -> 
 def _resolve_intensity_window(
     raw_arrays: List[np.ndarray], vmin: Optional[float], vmax: Optional[float]
 ) -> Tuple[float, float]:
-    """One shared display window for every panel this run renders (Sec
-    5.3): the 1st/99th percentile of every raw pixel actually sampled this
-    run, unless the caller pinned one or both ends explicitly.
+    """One shared display window for every panel in a figure: the
+    0.1st/99.9th percentile of every raw pixel actually sampled for that
+    figure, unless the caller pinned one or both ends explicitly. Panel A and
+    Panel B each get their own window (computed separately, from their own
+    sampled cases) since they're rendered as two independent figures.
     """
     if vmin is not None and vmax is not None:
         return float(vmin), float(vmax)
@@ -153,18 +238,21 @@ def _resolve_intensity_window(
         )
 
     pooled = np.concatenate([a.astype(np.float64).ravel() for a in raw_arrays])
-    lo = float(vmin) if vmin is not None else float(np.percentile(pooled, 1))
-    hi = float(vmax) if vmax is not None else float(np.percentile(pooled, 99))
+    lo = float(vmin) if vmin is not None else float(np.percentile(pooled, 0.1))
+    hi = float(vmax) if vmax is not None else float(np.percentile(pooled, 99.9))
     if hi <= lo:
         hi = lo + 1.0
     return lo, hi
 
 
 def _add_scale_bar(ax, voxel_size_um: float, length_um: float = SCALE_BAR_LENGTH_UM) -> None:
-    """Draw a ``length_um``-long scale bar near the bottom-right corner.
-    Length in pixels is computed from ``voxel_size_um`` at call time - never
-    hardcode a pixel length, it silently goes wrong the next time the
-    microscope/objective (and therefore voxel size) changes.
+    """Draw a ``length_um``-long scale bar near the bottom-right corner of
+    ``ax``. Length in pixels is computed from ``voxel_size_um`` at call time
+    - never hardcode a pixel length, it silently goes wrong the next time the
+    microscope/objective (and therefore voxel size) changes. Called on
+    exactly one panel per figure (the bottom-left cell) - repeating it on
+    every panel would be redundant since every panel in a figure shares the
+    same fixed crop size and voxel size.
     """
     length_px = length_um / voxel_size_um
     xlim, ylim = ax.get_xlim(), ax.get_ylim()
@@ -181,33 +269,36 @@ def _add_scale_bar(ax, voxel_size_um: float, length_um: float = SCALE_BAR_LENGTH
         y - 0.03 * height,
         f"{length_um:.0f} µm",
         color="yellow",
-        fontsize=7,
+        fontsize=8,
         ha="center",
         va="top",
     )
 
 
-def _add_source_label(ax, case: pd.Series) -> None:
-    label = f"{case['sample']} / z={int(case['z_index'])} / ({case['centroid_y']:.0f}, {case['centroid_x']:.0f})"
-    ax.text(
-        0.02,
-        0.02,
-        label,
-        transform=ax.transAxes,
-        fontsize=7,
-        color="yellow",
-        va="bottom",
-        ha="left",
-        bbox=dict(facecolor="black", alpha=0.5, pad=1),
-    )
+def _crop_fixed_window(
+    arr: np.ndarray, center_row: float, center_col: float, size: int = FIXED_CROP_SIZE
+) -> np.ndarray:
+    """Crop a fixed ``size`` x ``size`` window centered on
+    ``(center_row, center_col)`` - slides the window to stay in-bounds near
+    an edge rather than shrinking it, so every panel is exactly ``size`` x
+    ``size`` (unless the source image itself is smaller than ``size``).
+    """
+    h, w = arr.shape
+    half = size // 2
+    r_start = max(0, min(h - size, int(round(center_row)) - half)) if h >= size else 0
+    c_start = max(0, min(w - size, int(round(center_col)) - half)) if w >= size else 0
+    r_end = min(h, r_start + size)
+    c_end = min(w, c_start + size)
+    return arr[r_start:r_end, c_start:c_end]
 
 
-def _load_general_case_images(
-    case: pd.Series, folders: _ResolvedFolders, pad: int = 40
+def _load_panel_a_case_images(
+    case: pd.Series, folders: _ResolvedFolders
 ) -> Optional[Dict[str, np.ndarray]]:
-    """Read+crop the single flagged slice's raw/dark/gt/pred arrays for the
-    2x4 general grid (Sec 5.1). Returns ``None`` if the case's recorded
-    slice/bbox can no longer be resolved on disk (e.g. stale cache).
+    """Read the flagged slice's raw/dark/gt/pred arrays and crop each to the
+    fixed window centered on this case's centroid, for one Panel-A row.
+    Returns ``None`` if the case's recorded slice can no longer be resolved
+    on disk (e.g. stale cache).
     """
     gt_dir, raw_dir, dark_dir, pred_dir, gt_files = folders
     z_idx = int(case["z_index"])
@@ -221,31 +312,25 @@ def _load_general_case_images(
     if not (raw_f and dark_f and pred_f):
         return None
 
-    bbox = (
-        int(case["bbox_min_row"]),
-        int(case["bbox_min_col"]),
-        int(case["bbox_max_row"]),
-        int(case["bbox_max_col"]),
-    )
+    center_row, center_col = float(case["centroid_y"]), float(case["centroid_x"])
     try:
         return {
-            "raw": crop_with_padding(tifffile.imread(str(raw_f)), bbox, pad=pad),
-            "dark": crop_with_padding(tifffile.imread(str(dark_f)), bbox, pad=pad),
-            "gt": crop_with_padding(tifffile.imread(str(gtf)), bbox, pad=pad),
-            "pr": crop_with_padding(tifffile.imread(str(pred_f)), bbox, pad=pad),
+            "raw": _crop_fixed_window(tifffile.imread(str(raw_f)), center_row, center_col),
+            "dark": _crop_fixed_window(tifffile.imread(str(dark_f)), center_row, center_col),
+            "gt": _crop_fixed_window(tifffile.imread(str(gtf)), center_row, center_col),
+            "pr": _crop_fixed_window(tifffile.imread(str(pred_f)), center_row, center_col),
         }
     except Exception as exc:  # noqa: BLE001 - keep scanning on bad files
         logger.warning("Error reading images around %s: %s", case["slice_name"], exc)
         return None
 
 
-def _load_zcontext_images(
-    case: pd.Series, folders: _ResolvedFolders, pad: int = 40
+def _load_panel_b_case_images(
+    case: pd.Series, folders: _ResolvedFolders
 ) -> Optional[Dict[str, List[np.ndarray]]]:
-    """Read+crop the Z-2..Z+2 raw/dark/gt/pred arrays for the z_discontinuity
-    layout (Sec 5.2) - same shape ``fn_visualization.py``/
-    ``fp_visualization.py`` build, reused (not reimplemented) via
-    ``_visualization.plot_zcontext_sample``.
+    """Read+crop the Z-2..Z+2 raw/gt/pred arrays (no dark - Panel B doesn't
+    show it) for the z_discontinuity case, all cropped to the same fixed
+    window centered on this GT cell's centroid.
     """
     gt_dir, raw_dir, dark_dir, pred_dir, gt_files = folders
     z_idx = int(case["z_index"])
@@ -254,69 +339,98 @@ def _load_zcontext_images(
     if z_idx < 2 or z_idx > len(gt_files) - 3:
         return None  # too close to the volume's edge for a full Z-2..Z+2 window
 
-    bbox = (
-        int(case["bbox_min_row"]),
-        int(case["bbox_min_col"]),
-        int(case["bbox_max_row"]),
-        int(case["bbox_max_col"]),
-    )
-    sample_data: Dict[str, List[np.ndarray]] = {"raw": [], "dark": [], "gt": [], "pr": []}
+    center_row, center_col = float(case["centroid_y"]), float(case["centroid_x"])
+    sample_data: Dict[str, List[np.ndarray]] = {"raw": [], "gt": [], "pr": []}
     try:
         for dz in (-2, -1, 0, 1, 2):
             gtf = gt_files[z_idx + dz]
             raw_f = get_corresponding_file(raw_dir, gtf)
-            dark_f = get_corresponding_file(dark_dir, gtf)
             pred_f = get_corresponding_file(pred_dir, gtf)
-            if not (raw_f and dark_f and pred_f):
+            if not (raw_f and pred_f):
                 return None
-            sample_data["raw"].append(crop_with_padding(tifffile.imread(str(raw_f)), bbox, pad=pad))
-            sample_data["dark"].append(
-                crop_with_padding(tifffile.imread(str(dark_f)), bbox, pad=pad)
+            sample_data["raw"].append(
+                _crop_fixed_window(tifffile.imread(str(raw_f)), center_row, center_col)
             )
-            sample_data["gt"].append(crop_with_padding(tifffile.imread(str(gtf)), bbox, pad=pad))
-            sample_data["pr"].append(crop_with_padding(tifffile.imread(str(pred_f)), bbox, pad=pad))
+            sample_data["gt"].append(
+                _crop_fixed_window(tifffile.imread(str(gtf)), center_row, center_col)
+            )
+            sample_data["pr"].append(
+                _crop_fixed_window(tifffile.imread(str(pred_f)), center_row, center_col)
+            )
     except Exception as exc:  # noqa: BLE001 - keep scanning on bad files
         logger.warning("Error reading Z-context around %s: %s", case["slice_name"], exc)
         return None
     return sample_data
 
 
-def _render_general_grid(
-    loaded_cases: List[Tuple[pd.Series, Dict[str, np.ndarray]]],
+def _render_panel_a(
+    loaded_by_pattern: Dict[str, Dict[str, np.ndarray]],
     vmin: float,
     vmax: float,
     voxel_size_um: float,
 ) -> Optional[plt.Figure]:
-    """Rows = cases, columns = [Raw | Dark Sectioning | GT Overlay |
-    Prediction Overlay] (Sec 5.1). GT/Prediction "overlay" columns show the
-    same raw crop as the Raw column, with the GT/prediction mask boundary
-    contoured on top - not the bare binary mask fn-visualize/fp-visualize
-    show, since this gallery is meant to let a reviewer judge the mask
-    against the actual signal, not just see the mask shape.
+    """4 rows (one per Panel-A pattern, in ``_PANEL_A_PATTERNS`` order) x 4
+    cols [Raw | Dark Sectioning | GT Overlay | Prediction Overlay]. GT/
+    Prediction overlay columns show the *same* raw crop as the Raw column,
+    with the mask boundary contoured on top (outline only, not filled - a
+    filled mask would hide the very signal a reviewer needs to judge the
+    contour against, which matters most for ``contour_underestimate``).
     """
-    if not loaded_cases:
+    patterns = [p for p in _PANEL_A_PATTERNS if p in loaded_by_pattern]
+    if not patterns:
         return None
 
-    n = len(loaded_cases)
+    n = len(patterns)
     fig, axes = plt.subplots(n, 4, figsize=(16, 4 * n), squeeze=False)
-    col_titles = ["Raw", "Dark Sectioning", "GT Overlay", "Prediction Overlay"]
 
-    for row_idx, (case, imgs) in enumerate(loaded_cases):
+    for row_idx, pattern in enumerate(patterns):
+        imgs = loaded_by_pattern[pattern]
         panel_base = [imgs["raw"], imgs["dark"], imgs["raw"], imgs["raw"]]
         for col_idx, base_img in enumerate(panel_base):
             ax = axes[row_idx, col_idx]
             ax.imshow(base_img, cmap="gray", vmin=vmin, vmax=vmax)
             if col_idx == 2 and imgs["gt"].any():
-                ax.contour(imgs["gt"] > 0, levels=[0.5], colors="lime", linewidths=1.2)
+                ax.contour(imgs["gt"] > 0, levels=[0.5], colors="lime", linewidths=1)
             elif col_idx == 3 and imgs["pr"].any():
-                ax.contour(imgs["pr"] > 0, levels=[0.5], colors="red", linewidths=1.2)
-            _add_scale_bar(ax, voxel_size_um)
-            _add_source_label(ax, case)
+                ax.contour(imgs["pr"] > 0, levels=[0.5], colors="magenta", linewidths=1)
             if row_idx == 0:
-                ax.set_title(col_titles[col_idx])
+                ax.set_title(_PANEL_A_COL_TITLES[col_idx], fontsize=12, fontweight="bold")
+            if col_idx == 0:
+                ax.set_ylabel(_PANEL_A_ROW_LABELS[pattern], fontsize=12, fontweight="bold")
             ax.set_xticks([])
             ax.set_yticks([])
 
+    _add_scale_bar(axes[n - 1, 0], voxel_size_um)
+    plt.tight_layout()
+    return fig
+
+
+def _render_panel_b(
+    sample_data: Dict[str, List[np.ndarray]], vmin: float, vmax: float, voxel_size_um: float
+) -> plt.Figure:
+    """3 rows [Raw | GT | Prediction] x 5 cols [z-2 .. z+2], for the single
+    z_discontinuity example. GT/Prediction rows show the plain binary mask
+    (not an overlay) - there's no separate "base" image to overlay onto in
+    this layout the way Panel A's Raw column serves that role.
+    """
+    fig, axes = plt.subplots(3, 5, figsize=(20, 12), squeeze=False)
+
+    for row_idx, mod in enumerate(_PANEL_B_MODALITIES):
+        for col_idx in range(5):
+            ax = axes[row_idx, col_idx]
+            img = sample_data[mod][col_idx]
+            if mod == "raw":
+                ax.imshow(img, cmap="gray", vmin=vmin, vmax=vmax)
+            else:
+                ax.imshow(img > 0, cmap="gray", vmin=0, vmax=1)
+            if row_idx == 0:
+                ax.set_title(_PANEL_B_COL_TITLES[col_idx], fontsize=12, fontweight="bold")
+            if col_idx == 0:
+                ax.set_ylabel(_PANEL_B_ROW_TITLES[row_idx], fontsize=12, fontweight="bold")
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+    _add_scale_bar(axes[2, 0], voxel_size_um)
     plt.tight_layout()
     return fig
 
@@ -324,11 +438,11 @@ def _render_general_grid(
 class RepresentativeCaseGalleryCheck(Check):
     name = "representative-case-gallery"
     description = (
-        "Objectively-sampled example figures for 3 FN + 2 FP defect patterns (report Fig 5.3.2)"
+        "Two report figures (Fig 5.3.2 A/B): one objectively-selected example per defect pattern"
     )
     # Same reasoning as fn-visualize/fp-visualize: re-reads raw/dark/gt/pred
-    # TIFFs per sampled case on top of collect()'s own pass - opt-in only, so
-    # `segdiag run all` stays fast by default.
+    # TIFFs per selected case on top of collect()'s own pass - opt-in only,
+    # so `segdiag run all` stays fast by default.
     default_enabled = False
 
     def run(
@@ -338,33 +452,16 @@ class RepresentativeCaseGalleryCheck(Check):
             logger.warning("No collected instances - nothing to sample from.")
             return []
 
+        _configure_cjk_font()
+
         root: Path = args.root
         mask_name: Optional[str] = getattr(args, "mask_name", None) or "Flatten_561_mask"
         raw_name: Optional[str] = getattr(args, "raw_name", None) or "Flatten_561"
         dark_name: str = getattr(args, "dark_name", None) or "Flatten_561_dark"
         seed: int = getattr(args, "gallery_seed", None) or DEFAULT_SEED
-        n_per_pattern: int = getattr(args, "gallery_n_per_pattern", None) or DEFAULT_N_PER_PATTERN
-        patterns_arg: Optional[str] = getattr(args, "gallery_patterns", None)
         voxel_size_um: float = getattr(args, "voxel_size_um", None) or DEFAULT_VOXEL_SIZE_UM
         cli_vmin: Optional[float] = getattr(args, "intensity_vmin", None)
         cli_vmax: Optional[float] = getattr(args, "intensity_vmax", None)
-
-        if patterns_arg:
-            patterns = [p.strip() for p in patterns_arg.split(",") if p.strip()]
-            unknown = [p for p in patterns if p not in PATTERNS]
-            if unknown:
-                logger.warning("Ignoring unknown pattern(s) %s - valid: %s", unknown, PATTERNS)
-                patterns = [p for p in patterns if p in PATTERNS]
-        else:
-            patterns = list(PATTERNS)
-
-        candidate_counts: Dict[str, int] = {}
-        cases_by_pattern: Dict[str, pd.DataFrame] = {}
-        for pattern in patterns:
-            candidates = _select_candidates(instances, pattern)
-            candidate_counts[pattern] = len(candidates)
-            logger.info("pattern=%s candidate_count=%d", pattern, len(candidates))
-            cases_by_pattern[pattern] = _sample_cases(candidates, pattern, n_per_pattern, seed)
 
         folder_cache: Dict[Tuple[str, str], Optional[_ResolvedFolders]] = {}
 
@@ -376,123 +473,123 @@ class RepresentativeCaseGalleryCheck(Check):
                 )
             return folder_cache[key]
 
-        # Phase 1: load every sampled case's raw pixel crop(s) up front, so
-        # the shared intensity window (Sec 5.3) can be derived from what
-        # actually got sampled this run, before any figure gets rendered.
-        loaded_general: Dict[str, List[Tuple[pd.Series, Dict[str, np.ndarray]]]] = {}
-        loaded_zcontext: Dict[str, List[Tuple[pd.Series, Dict[str, List[np.ndarray]]]]] = {}
-        raw_samples_for_window: List[np.ndarray] = []
-
-        for pattern in patterns:
-            cases = cases_by_pattern.get(pattern)
-            if cases is None or cases.empty:
-                continue
-            if pattern == "z_discontinuity":
-                items: List[Tuple[pd.Series, Dict[str, List[np.ndarray]]]] = []
-                for _, case in cases.iterrows():
-                    folders = _folders_for(case["sample"], case["model"])
-                    if folders is None:
-                        continue
-                    sample_data = _load_zcontext_images(case, folders)
-                    if sample_data is None:
-                        continue
-                    items.append((case, sample_data))
-                    raw_samples_for_window.extend(sample_data["raw"])
-                loaded_zcontext[pattern] = items
-            else:
-                general_items: List[Tuple[pd.Series, Dict[str, np.ndarray]]] = []
-                for _, case in cases.iterrows():
-                    folders = _folders_for(case["sample"], case["model"])
-                    if folders is None:
-                        continue
-                    imgs = _load_general_case_images(case, folders)
-                    if imgs is None:
-                        continue
-                    general_items.append((case, imgs))
-                    raw_samples_for_window.append(imgs["raw"])
-                loaded_general[pattern] = general_items
-
-        vmin, vmax = _resolve_intensity_window(raw_samples_for_window, cli_vmin, cli_vmax)
-        logger.info(
-            "representative-case-gallery: shared intensity window vmin=%.3f vmax=%.3f "
-            "(voxel_size_um=%.3f, seed=%d)",
-            vmin,
-            vmax,
-            voxel_size_um,
-            seed,
-        )
+        # Exactly one case per pattern - the whole point of this figure
+        # design is a single, defensible example per defect type, not a
+        # sampled gallery of several.
+        candidate_counts: Dict[str, int] = {}
+        picked_cases: Dict[str, Optional[pd.Series]] = {}
+        for pattern in PATTERNS:
+            candidates = _select_candidates(instances, pattern)
+            candidate_counts[pattern] = len(candidates)
+            logger.info("pattern=%s candidate_count=%d", pattern, len(candidates))
+            sampled = _sample_cases(candidates, pattern, n=1, seed=seed)
+            picked_cases[pattern] = sampled.iloc[0] if not sampled.empty else None
 
         artifacts: List[ReportArtifact] = []
-        summary_rows: List[dict] = []
 
-        for pattern in patterns:
-            sampled_count = 0
-            if pattern == "z_discontinuity":
-                items = loaded_zcontext.get(pattern, [])
-                for i, (case, sample_data) in enumerate(items):
-                    fig = plot_zcontext_sample(
-                        sample_data,
-                        title=(
-                            f"{pattern} #{i + 1}  (Model: {case['model']} | "
-                            f"Sample: {case['sample']} | Center Slice: {case['slice_name']} | "
-                            f"GT Z-span: {int(case['bbox_max_z'] - case['bbox_min_z'])} | "
-                            f"Matched prediction Z-span: {int(case['matched_pred_z_span'])})"
-                        ),
-                        highlight_row="gt",
-                        vmin=vmin,
-                        vmax=vmax,
-                    )
-                    artifacts.append(
-                        ReportArtifact(
-                            name=f"case_gallery_{pattern}_{i + 1}",
-                            table=case.to_frame().T,
-                            figure=fig,
-                            metadata={
-                                "pattern": pattern,
-                                "seed": seed,
-                                "candidate_count": candidate_counts.get(pattern, 0),
-                                "sampled_count": len(items),
-                            },
-                        )
-                    )
-                sampled_count = len(items)
-            else:
-                general_items = loaded_general.get(pattern, [])
-                fig = _render_general_grid(general_items, vmin, vmax, voxel_size_um)
-                if fig is not None:
-                    artifacts.append(
-                        ReportArtifact(
-                            name=f"case_gallery_{pattern}",
-                            table=pd.DataFrame([case for case, _ in general_items]),
-                            figure=fig,
-                            metadata={
-                                "pattern": pattern,
-                                "seed": seed,
-                                "candidate_count": candidate_counts.get(pattern, 0),
-                                "sampled_count": len(general_items),
-                            },
-                        )
-                    )
-                sampled_count = len(general_items)
+        # --- Panel A: the four single-slice patterns -----------------------
+        panel_a_loaded: Dict[str, Dict[str, np.ndarray]] = {}
+        panel_a_cases: List[pd.Series] = []
+        panel_a_raw: List[np.ndarray] = []
+        for pattern in _PANEL_A_PATTERNS:
+            case = picked_cases.get(pattern)
+            if case is None:
+                continue
+            folders = _folders_for(case["sample"], case["model"])
+            if folders is None:
+                continue
+            imgs = _load_panel_a_case_images(case, folders)
+            if imgs is None:
+                continue
+            panel_a_loaded[pattern] = imgs
+            panel_a_cases.append(case)
+            panel_a_raw.append(imgs["raw"])
 
-            summary_rows.append(
-                {
-                    "pattern": pattern,
-                    "seed": seed,
-                    "candidate_count": candidate_counts.get(pattern, 0),
-                    "sampled_count": sampled_count,
-                }
+        panel_a_sampled_patterns = set(panel_a_loaded)
+        if panel_a_loaded:
+            vmin_a, vmax_a = _resolve_intensity_window(panel_a_raw, cli_vmin, cli_vmax)
+            logger.info(
+                "representative-case-gallery Panel A: shared intensity window "
+                "vmin=%.3f vmax=%.3f (voxel_size_um=%.3f, seed=%d)",
+                vmin_a,
+                vmax_a,
+                voxel_size_um,
+                seed,
             )
+            fig_a = _render_panel_a(panel_a_loaded, vmin_a, vmax_a, voxel_size_um)
+            if fig_a is not None:
+                artifacts.append(
+                    ReportArtifact(
+                        name="case_gallery_panel_a_general",
+                        table=pd.DataFrame(panel_a_cases),
+                        figure=fig_a,
+                        metadata={
+                            "patterns": sorted(panel_a_sampled_patterns),
+                            "seed": seed,
+                            "vmin": vmin_a,
+                            "vmax": vmax_a,
+                            "crop_size": FIXED_CROP_SIZE,
+                        },
+                    )
+                )
+        else:
+            logger.warning("Panel A: no renderable case found for any of %s", _PANEL_A_PATTERNS)
 
-        # Total table: how large each pattern's candidate pool was, the seed
-        # used, and how many cases actually got rendered - the numbers a
-        # figure caption needs, so they don't have to be re-derived by hand.
+        # --- Panel B: z_discontinuity's Z-context ---------------------------
+        z_case = picked_cases.get("z_discontinuity")
+        panel_b_rendered = False
+        if z_case is not None:
+            folders = _folders_for(z_case["sample"], z_case["model"])
+            sample_data = (
+                _load_panel_b_case_images(z_case, folders) if folders is not None else None
+            )
+            if sample_data is not None:
+                vmin_b, vmax_b = _resolve_intensity_window(sample_data["raw"], cli_vmin, cli_vmax)
+                logger.info(
+                    "representative-case-gallery Panel B: shared intensity window "
+                    "vmin=%.3f vmax=%.3f (voxel_size_um=%.3f, seed=%d)",
+                    vmin_b,
+                    vmax_b,
+                    voxel_size_um,
+                    seed,
+                )
+                fig_b = _render_panel_b(sample_data, vmin_b, vmax_b, voxel_size_um)
+                artifacts.append(
+                    ReportArtifact(
+                        name="case_gallery_panel_b_z_discontinuity",
+                        table=z_case.to_frame().T,
+                        figure=fig_b,
+                        metadata={
+                            "pattern": "z_discontinuity",
+                            "seed": seed,
+                            "vmin": vmin_b,
+                            "vmax": vmax_b,
+                            "crop_size": FIXED_CROP_SIZE,
+                        },
+                    )
+                )
+                panel_b_rendered = True
+        if not panel_b_rendered:
+            logger.warning("Panel B: no renderable case found for z_discontinuity")
+
+        # Bookkeeping table: candidate-pool size, seed, and whether a case
+        # actually got rendered for every pattern - the numbers a figure
+        # caption needs, so they don't have to be re-derived by hand.
+        summary_rows = [
+            {
+                "pattern": pattern,
+                "seed": seed,
+                "candidate_count": candidate_counts.get(pattern, 0),
+                "sampled_count": int(
+                    pattern in panel_a_sampled_patterns
+                    or (pattern == "z_discontinuity" and panel_b_rendered)
+                ),
+            }
+            for pattern in PATTERNS
+        ]
         artifacts.append(
             ReportArtifact(name="case_gallery_sampling_summary", table=pd.DataFrame(summary_rows))
         )
-
-        if not any(a.figure is not None for a in artifacts):
-            logger.warning("No renderable cases found for any pattern.")
 
         return artifacts
 

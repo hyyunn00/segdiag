@@ -1,13 +1,17 @@
 """Tests for the representative-case-gallery check
-(SEGDIAG_REPRESENTATIVE_CASE_GALLERY.md), covering the six validation items
-from its section 7:
+(SEGDIAG_REPRESENTATIVE_CASE_GALLERY.md + the two-panel figure-legend
+redesign it now follows), covering:
 
 1. filter selection is reproducible
-2. sampling is reproducible for a fixed seed
+2. sampling (which single candidate gets picked) is reproducible for a
+   fixed seed
 3. z_discontinuity boundary (GT Z-span >= 3, matched prediction Z-span == 1)
 4. missing_gt_annotation boundary (background_contrast_sigma >= 2.0)
-5. intensity-window consistency (one shared vmin/vmax per run)
-6. a too-small candidate pool degrades gracefully (warns, doesn't error)
+5. intensity-window consistency (one shared vmin/vmax per figure)
+6. a missing pattern degrades gracefully (warns, doesn't error, the other
+   panel still renders)
+7. the fixed 64x64 crop window is centered on the instance's centroid and
+   identical across patterns
 """
 
 from __future__ import annotations
@@ -20,7 +24,9 @@ import pytest
 import tifffile
 
 from segdiag.checks.representative_case_gallery import (
+    FIXED_CROP_SIZE,
     RepresentativeCaseGalleryCheck,
+    _crop_fixed_window,
     _resolve_intensity_window,
     _sample_cases,
     _select_candidates,
@@ -232,45 +238,45 @@ def test_missing_gt_annotation_includes_sigma_exactly_two():
     assert list(selected["instance_id"]) == [1]
 
 
-# --- 2. sampling is reproducible / 6. small candidate pool ------------------
+# --- 2. sampling is reproducible ---------------------------------------------
 
 
 def test_sample_cases_is_reproducible_for_a_fixed_seed():
     candidates = _instances([_row(instance_id=i) for i in range(20)])
-    first = _sample_cases(candidates, "contour_underestimate", n=5, seed=42)
-    second = _sample_cases(candidates, "contour_underestimate", n=5, seed=42)
+    first = _sample_cases(candidates, "contour_underestimate", n=1, seed=42)
+    second = _sample_cases(candidates, "contour_underestimate", n=1, seed=42)
     pd.testing.assert_frame_equal(first, second)
 
 
 def test_sample_cases_differs_across_seeds_with_enough_candidates():
     candidates = _instances([_row(instance_id=i) for i in range(20)])
-    a = _sample_cases(candidates, "contour_underestimate", n=5, seed=1)
-    b = _sample_cases(candidates, "contour_underestimate", n=5, seed=2)
+    a = _sample_cases(candidates, "contour_underestimate", n=1, seed=1)
+    b = _sample_cases(candidates, "contour_underestimate", n=1, seed=2)
     assert list(a["instance_id"]) != list(b["instance_id"])
 
 
 def test_sample_cases_handles_a_too_small_candidate_pool_without_erroring():
     candidates = _instances([_row(instance_id=1)])
-    sampled = _sample_cases(candidates, "no_response", n=3, seed=42)
+    sampled = _sample_cases(candidates, "no_response", n=1, seed=42)
     assert len(sampled) == 1
 
 
 def test_sample_cases_returns_empty_when_no_candidates():
     empty = _instances([])
-    assert _sample_cases(empty, "no_response", n=3, seed=42).empty
+    assert _sample_cases(empty, "no_response", n=1, seed=42).empty
 
 
 # --- 5. intensity-window consistency ----------------------------------------
 
 
-def test_resolve_intensity_window_uses_pooled_1st_99th_percentile():
+def test_resolve_intensity_window_uses_pooled_0_1_99_9_percentile():
     rng = np.random.default_rng(0)
     arrays = [rng.normal(50, 5, size=(20, 20)) for _ in range(4)]
     vmin, vmax = _resolve_intensity_window(arrays, None, None)
 
     pooled = np.concatenate([a.ravel() for a in arrays])
-    assert vmin == pytest.approx(np.percentile(pooled, 1))
-    assert vmax == pytest.approx(np.percentile(pooled, 99))
+    assert vmin == pytest.approx(np.percentile(pooled, 0.1))
+    assert vmax == pytest.approx(np.percentile(pooled, 99.9))
     assert vmin < vmax
 
 
@@ -286,6 +292,32 @@ def test_resolve_intensity_window_degrades_gracefully_with_no_arrays():
     assert vmin < vmax
 
 
+# --- 7. fixed 64x64 crop window ----------------------------------------------
+
+
+def test_crop_fixed_window_is_always_the_configured_size_away_from_edges():
+    arr = np.arange(300 * 300).reshape(300, 300)
+    crop = _crop_fixed_window(arr, center_row=150, center_col=150)
+    assert crop.shape == (FIXED_CROP_SIZE, FIXED_CROP_SIZE)
+
+
+def test_crop_fixed_window_is_centered_on_the_given_centroid():
+    arr = np.zeros((300, 300), dtype=np.uint8)
+    arr[150, 150] = 1  # a single marker voxel at the intended center
+    crop = _crop_fixed_window(arr, center_row=150, center_col=150)
+    assert crop.shape == (FIXED_CROP_SIZE, FIXED_CROP_SIZE)
+    # The marker should land exactly in the middle of the crop.
+    marker_row, marker_col = np.argwhere(crop == 1)[0]
+    assert marker_row == FIXED_CROP_SIZE // 2
+    assert marker_col == FIXED_CROP_SIZE // 2
+
+
+def test_crop_fixed_window_slides_to_stay_in_bounds_near_an_edge():
+    arr = np.zeros((300, 300), dtype=np.uint8)
+    crop = _crop_fixed_window(arr, center_row=2, center_col=2)
+    assert crop.shape == (FIXED_CROP_SIZE, FIXED_CROP_SIZE)
+
+
 # --- End-to-end wiring: collect() -> check, on a small synthetic 3D dataset -
 
 
@@ -296,9 +328,9 @@ def _build_gallery_dataset(root) -> None:
     ``matched_pred_z_span``/``background_contrast_sigma``.
     """
     shape = (300, 300)
-    # z_discontinuity needs a full Z-2..Z+2 window around its center slice
-    # (reused from fn_visualization.py's Z-context renderer), so at least 5
-    # slices are required with the discontinuity's center at index 2.
+    # z_discontinuity needs a full Z-2..Z+2 window around its center slice,
+    # so at least 5 slices are required with the discontinuity's center at
+    # index 2.
     num_z = 5
     sample_dir = root / "case01"
     gt_dir = sample_dir / "Flatten_561_mask"
@@ -365,8 +397,6 @@ def gallery_dataset(tmp_path):
         raw_name=None,
         dark_name="Flatten_561_dark",
         gallery_seed=42,
-        gallery_n_per_pattern=3,
-        gallery_patterns=None,
         intensity_vmin=None,
         intensity_vmax=None,
         voxel_size_um=1.82,
@@ -389,7 +419,7 @@ def test_pipeline_populates_matched_pred_z_span_and_background_contrast_sigma(ga
     assert hallucination.iloc[0]["background_contrast_sigma"] >= 2.0
 
 
-def test_representative_case_gallery_check_produces_a_figure_per_pattern(gallery_dataset):
+def test_representative_case_gallery_check_produces_both_panels(gallery_dataset):
     instances_df, quality_df, args = gallery_dataset
 
     artifacts = RepresentativeCaseGalleryCheck().run(instances_df, quality_df, args)
@@ -407,26 +437,98 @@ def test_representative_case_gallery_check_produces_a_figure_per_pattern(gallery
     # Every planted pattern has exactly one candidate in this dataset, and
     # every one of them should have been renderable (folders/slices exist).
     assert (summary["candidate_count"] >= 1).all()
-    assert (summary["sampled_count"] >= 1).all()
+    assert (summary["sampled_count"] == 1).all()
 
-    assert by_name["case_gallery_contour_underestimate"].figure is not None
-    assert by_name["case_gallery_no_response"].figure is not None
-    assert by_name["case_gallery_background_noise"].figure is not None
-    assert by_name["case_gallery_missing_gt_annotation"].figure is not None
-    assert by_name["case_gallery_z_discontinuity_1"].figure is not None
+    assert "case_gallery_panel_a_general" in by_name
+    panel_a = by_name["case_gallery_panel_a_general"]
+    assert panel_a.figure is not None
+    # One row per pattern - exactly one example each, not a multi-case gallery.
+    assert len(panel_a.table) == 4
+    assert set(panel_a.table["classification"]).issubset(
+        {"true_positive", "blind_fn", "false_positive"}
+    )
+    assert panel_a.metadata["crop_size"] == FIXED_CROP_SIZE
+
+    assert "case_gallery_panel_b_z_discontinuity" in by_name
+    panel_b = by_name["case_gallery_panel_b_z_discontinuity"]
+    assert panel_b.figure is not None
+    assert len(panel_b.table) == 1
+    assert panel_b.metadata["crop_size"] == FIXED_CROP_SIZE
 
 
-def test_representative_case_gallery_check_respects_gallery_patterns_filter(gallery_dataset):
-    instances_df, quality_df, args = gallery_dataset
-    args.gallery_patterns = "no_response,background_noise"
+def test_representative_case_gallery_check_degrades_gracefully_when_one_pattern_is_missing(
+    tmp_path,
+):
+    """No hallucination_fp planted at all -> missing_gt_annotation has zero
+    candidates. Panel A must still render for the other three patterns, and
+    Panel B must still render, instead of the whole check failing.
+    """
+    shape = (300, 300)
+    num_z = 5
+    sample_dir = tmp_path / "case01"
+    gt_dir = sample_dir / "Flatten_561_mask"
+    raw_dir = sample_dir / "Flatten_561"
+    dark_dir = sample_dir / "Flatten_561_dark"
+    pred_dir = sample_dir / "Flatten_561_unet_v9_mask.scroll-tif"
+    for d in (gt_dir, raw_dir, dark_dir, pred_dir):
+        d.mkdir(parents=True)
+
+    rng = np.random.default_rng(0)
+    gt = np.zeros((num_z, *shape), dtype=np.uint8)
+    pr = np.zeros((num_z, *shape), dtype=np.uint8)
+    raw = rng.normal(20.0, 1.0, (num_z, *shape)).astype(np.float32)
+    dark = np.full((num_z, *shape), 5.0, dtype=np.float32)
+
+    gt[2, 10:20, 10:20] = 1
+    gt[1, 15, 15] = 1
+    gt[3, 15, 15] = 1
+    pr[2, 10:20, 10:20] = 1
+
+    gt[0, 50:60, 50:60] = 1
+    pr[0, 50:60, 53:63] = 1
+
+    gt[0, 100:110, 100:110] = 1
+
+    pr[0, 150:157, 150:157] = 1
+    raw[0, 150:157, 150:157] = 20.0
+
+    for z in range(num_z):
+        tifffile.imwrite(gt_dir / f"slice_{z:04d}.tif", gt[z])
+        tifffile.imwrite(pred_dir / f"slice_{z:04d}.tif", pr[z])
+        tifffile.imwrite(raw_dir / f"slice_{z:04d}.tif", raw[z])
+        tifffile.imwrite(dark_dir / f"slice_{z:04d}.tif", dark[z])
+
+    instances_df, quality_df = collect(tmp_path)
+    args = argparse.Namespace(
+        root=tmp_path,
+        sample=None,
+        model=None,
+        output_dir=tmp_path / "out",
+        mask_name=None,
+        raw_name=None,
+        dark_name="Flatten_561_dark",
+        gallery_seed=42,
+        intensity_vmin=None,
+        intensity_vmax=None,
+        voxel_size_um=1.82,
+    )
 
     artifacts = RepresentativeCaseGalleryCheck().run(instances_df, quality_df, args)
-    summary = next(a for a in artifacts if a.name == "case_gallery_sampling_summary").table
+    by_name = {a.name: a for a in artifacts}
 
-    assert set(summary["pattern"]) == {"no_response", "background_noise"}
+    summary = by_name["case_gallery_sampling_summary"].table
+    missing_row = summary[summary["pattern"] == "missing_gt_annotation"].iloc[0]
+    assert missing_row["candidate_count"] == 0
+    assert missing_row["sampled_count"] == 0
+
+    panel_a = by_name["case_gallery_panel_a_general"]
+    assert panel_a.figure is not None
+    assert len(panel_a.table) == 3  # missing_gt_annotation excluded, three others present
+
+    assert by_name["case_gallery_panel_b_z_discontinuity"].figure is not None
 
 
-def test_representative_case_gallery_check_returns_empty_summary_when_no_instances():
+def test_representative_case_gallery_check_returns_empty_when_no_instances():
     empty = pd.DataFrame(columns=["role"])
     args = argparse.Namespace(root=None)
     assert RepresentativeCaseGalleryCheck().run(empty, empty, args) == []

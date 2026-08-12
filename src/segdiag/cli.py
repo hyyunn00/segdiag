@@ -23,9 +23,6 @@ import typer
 from rich.logging import RichHandler
 
 from segdiag.checks import CHECKS
-from segdiag.checks.representative_case_gallery import (
-    DEFAULT_N_PER_PATTERN as GALLERY_DEFAULT_N_PER_PATTERN,
-)
 from segdiag.checks.representative_case_gallery import DEFAULT_SEED as GALLERY_DEFAULT_SEED
 from segdiag.checks.representative_case_gallery import (
     DEFAULT_VOXEL_SIZE_UM as GALLERY_DEFAULT_VOXEL_SIZE_UM,
@@ -128,18 +125,9 @@ def run(
     gallery_seed: int = typer.Option(
         GALLERY_DEFAULT_SEED,
         "--gallery-seed",
-        help="僅 representative-case-gallery 使用：固定抽樣種子（可重現）。",
-    ),
-    gallery_n_per_pattern: int = typer.Option(
-        GALLERY_DEFAULT_N_PER_PATTERN,
-        "--gallery-n-per-pattern",
-        help="僅 representative-case-gallery 使用：每種型態抽樣數量。",
-    ),
-    gallery_patterns: Optional[str] = typer.Option(
-        None,
-        "--gallery-patterns",
         help=(
-            "僅 representative-case-gallery 使用：只跑指定型態（逗號分隔），" "預設全部五種都跑。"
+            "僅 representative-case-gallery 使用：固定抽樣種子，決定每種型態候選集合裡"
+            "挑中哪一例（每種型態固定只出 1 例，可重現）。"
         ),
     ),
     intensity_vmin: Optional[float] = typer.Option(
@@ -147,7 +135,7 @@ def run(
         "--intensity-vmin",
         help=(
             "僅 representative-case-gallery 使用：顯示強度視窗下限，未指定時用"
-            "本次實際抽到案例的 1st percentile。"
+            "該圖實際案例的 0.1st percentile。"
         ),
     ),
     intensity_vmax: Optional[float] = typer.Option(
@@ -155,7 +143,7 @@ def run(
         "--intensity-vmax",
         help=(
             "僅 representative-case-gallery 使用：顯示強度視窗上限，未指定時用"
-            "本次實際抽到案例的 99th percentile。"
+            "該圖實際案例的 99.9th percentile。"
         ),
     ),
     voxel_size_um: float = typer.Option(
@@ -258,8 +246,6 @@ def run(
         fn_min_volume=fn_min_volume,
         fn_max_volume=fn_max_volume,
         gallery_seed=gallery_seed,
-        gallery_n_per_pattern=gallery_n_per_pattern,
-        gallery_patterns=gallery_patterns,
         intensity_vmin=intensity_vmin,
         intensity_vmax=intensity_vmax,
         voxel_size_um=voxel_size_um,

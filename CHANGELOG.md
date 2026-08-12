@@ -7,14 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **`representative-case-gallery` check** (`SEGDIAG_REPRESENTATIVE_CASE_GALLERY.md`):
-  produces report Figure 5.3.2 - objectively-selected, fixed-seed-sampled
-  example figures for three FN patterns (`contour_underestimate`,
-  `no_response`, `z_discontinuity`) and two FP patterns (`background_noise`,
-  `missing_gt_annotation`), each chosen by a rule over `collect()`'s
-  existing columns rather than eyeballed by a reviewer. Opt-in (like
-  `fn-visualize`/`fp-visualize`), since it re-reads raw/dark/GT/prediction
-  TIFFs per sampled case.
+- **`representative-case-gallery` check** (`SEGDIAG_REPRESENTATIVE_CASE_GALLERY.md`,
+  rendering layout per a later figure-legend request that superseded the
+  original doc's "one figure per pattern" design): produces report Figure
+  5.3.2 as **two figures**, each with exactly **one** objectively-selected,
+  fixed-seed-picked example - not a multi-case gallery, and not crammed
+  into a single figure (`z_discontinuity` needs an entirely different
+  layout than the other four). Opt-in (like `fn-visualize`/`fp-visualize`),
+  since it re-reads raw/dark/GT/prediction TIFFs per selected case.
+  - **Panel A** (`case_gallery_panel_a_general`, 4 rows x 4 cols): one row
+    each for `contour_underestimate`/`no_response`/`background_noise`/
+    `missing_gt_annotation`, columns [Raw | Dark Sectioning | GT Overlay |
+    Prediction Overlay] - overlay columns show the raw crop with the mask
+    boundary contoured in outline only (green GT / magenta prediction,
+    1px), never filled, so the underlying signal stays visible.
+  - **Panel B** (`case_gallery_panel_b_z_discontinuity`, 3 rows x 5 cols):
+    `z_discontinuity` alone, rows [Raw | GT | Prediction], columns Z-2..Z+2.
+    Deliberately does *not* reuse `fn-visualize`/`fp-visualize`'s shared
+    `plot_zcontext_sample` renderer (row count, overlay style, crop
+    strategy, and intensity-window handling all diverge enough that a
+    bespoke renderer was cheaper than branching a shared one).
+  - Every panel in both figures uses a **fixed 64x64 voxel crop** centered
+    on the flagged instance's centroid (`FIXED_CROP_SIZE` - matches the
+    model's training patch size), not a bbox-derived one, so panels within
+    a figure are directly comparable. Each figure gets its own single
+    shared intensity window (0.1st/99.9th percentile of that figure's own
+    sampled raw pixels, overridable via `--intensity-vmin`/
+    `--intensity-vmax`) and exactly one scale bar (bottom-left panel only).
   - `segdiag.core.schema.InstanceRecord` gained two fields, both populated
     by `core.pipeline._volume_instance_rows()` for every run regardless of
     whether this check ever runs: `matched_pred_z_span` (a matched GT row's
@@ -25,21 +44,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `|mean_intensity - background_mean| / background_std` ratio
     `fp_root_cause` already computes internally but previously only ever
     collapsed into the `fp_subtype` threshold decision).
-  - `segdiag.checks._visualization.plot_zcontext_sample()` gained optional
-    `vmin`/`vmax` parameters (default `None`, preserving `fn-visualize`/
-    `fp-visualize`'s existing per-panel auto-stretch unchanged) so
-    `representative-case-gallery`'s `z_discontinuity` layout can reuse this
-    renderer while still sharing one intensity window across every panel in
-    the run, per the spec's section 5.3.
-  - New CLI flags (this check only): `--gallery-seed` (default `42`),
-    `--gallery-n-per-pattern` (default `3`), `--gallery-patterns`
-    (comma-separated subset, default all five), `--intensity-vmin`/
-    `--intensity-vmax` (default: 1st/99th percentile of the run's actually-
-    sampled raw pixels), `--voxel-size-um` (default `1.82`, drives the
-    scale bar).
   - `z_min`/`z_max` from the original spec were **not** added as new
     fields - `InstanceRecord` already had equivalent `bbox_min_z`/
     `bbox_max_z` (half-open, like its other bbox fields), reused directly.
+  - New CLI flags (this check only): `--gallery-seed` (default `42`,
+    decides which single candidate each pattern's pool yields),
+    `--intensity-vmin`/`--intensity-vmax` (per-figure override),
+    `--voxel-size-um` (default `1.82`, drives the scale bar).
+  - A CJK-capable font (PingFang/Heiti/Hiragino/Noto Sans CJK/etc.,
+    whichever is installed - `_configure_cjk_font()`) is preferred for the
+    figures' Chinese panel/row/column labels, since matplotlib's default
+    DejaVu Sans has no CJK glyph coverage and would otherwise silently
+    render them as missing-glyph boxes.
 
 ### Fixed
 - **`fn-visualize` ignored `--model-exact`**: unlike every other check, this
