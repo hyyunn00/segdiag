@@ -58,6 +58,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `z_min`/`z_max` from the original spec were **not** added as new
     fields - `InstanceRecord` already had equivalent `bbox_min_z`/
     `bbox_max_z` (half-open, like its other bbox fields), reused directly.
+  - **`z_discontinuity`'s selection rule changed from a hard
+    `matched_pred_z_span == 1` to a proportional
+    `matched_pred_z_span <= Z_DISCONTINUITY_COVERAGE_RATIO * gt_z_span`
+    (default ratio `0.3`, GT still required to span >= 3 slices).** The
+    original spec's literal rule turned out to be unsatisfiable on real
+    model output: confirmed on an actual dataset (352 TP rows from a
+    `v12_unet_dark` run) that `matched_pred_z_span` never drops below `2` -
+    a real trained model's matched (TP) predictions essentially never come
+    out exactly 1-slice-thick in 3D, so the candidate pool was always empty
+    even though real Z-underestimation clearly occurs in that same data
+    (e.g. a GT spanning 14 slices matched by a prediction spanning only 3).
+    The proportional rule catches that same case. Not CLI-configurable -
+    change `Z_DISCONTINUITY_COVERAGE_RATIO`/`Z_DISCONTINUITY_MIN_GT_Z_SPAN`
+    in `checks/representative_case_gallery.py` to retune for a different
+    model's typical Z-coverage behavior.
   - New CLI flags (this check only): `--gallery-seed` (default `42`, fixes
     the attempt order for each pattern's candidate pool),
     `--intensity-vmin`/`--intensity-vmax` (per-figure override),

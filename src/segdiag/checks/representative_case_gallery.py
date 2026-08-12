@@ -80,6 +80,29 @@ SCALE_BAR_LENGTH_UM = 10.0
 #: at the default 1.82 um/voxel).
 FIXED_CROP_SIZE = 64
 
+#: ``z_discontinuity`` qualifies when the matched prediction's Z-span covers
+#: at most this fraction of the GT cell's own Z-span - "the model only
+#: caught a small fraction of how tall this cell actually is." The original
+#: spec required a hard ``matched_pred_z_span == 1``, but a real trained
+#: model's matched (TP) predictions essentially never come out exactly
+#: 1-slice-thick in 3D - confirmed on an actual v12_unet_dark run, where
+#: ``matched_pred_z_span`` never dropped below 2 across 352 TP rows, so
+#: that literal rule always yielded zero candidates even though the
+#: underlying Z-underestimation pattern the rule is trying to catch (e.g.
+#: GT spanning 14 slices, matched prediction spanning only 3) clearly does
+#: occur. A proportional threshold catches the same intent without
+#: requiring that unrealistic extreme. Not CLI-configurable, same as the
+#: other patterns' thresholds (``0.50 <= best_iou < 0.60``,
+#: ``background_contrast_sigma >= 2.0``) - if this needs retuning for a
+#: different model's typical Z-coverage behavior, change the constant here.
+Z_DISCONTINUITY_COVERAGE_RATIO = 0.3
+
+#: Still require the GT cell to be reasonably tall before treating a low
+#: Z-coverage ratio as meaningful - a 2-slice-tall GT matched by 1 slice is
+#: a 50% ratio but not really a "the model butchered a tall cell" story the
+#: same way a 14-slice GT matched by 3 slices is.
+Z_DISCONTINUITY_MIN_GT_Z_SPAN = 3
+
 PATTERNS = [
     "contour_underestimate",
     "no_response",
@@ -140,9 +163,14 @@ def _select_candidates(instances: pd.DataFrame, pattern: str) -> pd.DataFrame:
 
 def _select_z_discontinuity_candidates(instances: pd.DataFrame) -> pd.DataFrame:
     """GT cells the model *did* claim as a strict match, but only via a
-    prediction spanning a single Z-slice, despite the GT cell itself
-    spanning >= 3 - i.e. the model responded to just a thin cross-section of
-    a tall cell rather than the whole thing.
+    prediction covering at most ``Z_DISCONTINUITY_COVERAGE_RATIO`` of the
+    GT cell's own Z-span (and the GT cell itself spans at least
+    ``Z_DISCONTINUITY_MIN_GT_Z_SPAN``) - i.e. the model responded to only a
+    thin cross-section of a tall cell rather than the whole thing.
+
+    Proportional, not the original spec's hard ``matched_pred_z_span == 1``
+    - see :data:`Z_DISCONTINUITY_COVERAGE_RATIO`'s docstring for why that
+    literal rule turned out to be unsatisfiable on real model output.
 
     Bbox fields are half-open (``bbox_max_*`` is exclusive, matching
     ``skimage.measure.regionprops``), so a Z-span is ``max - min`` with no
@@ -152,9 +180,12 @@ def _select_z_discontinuity_candidates(instances: pd.DataFrame) -> pd.DataFrame:
         (instances["role"] == "gt")
         & (instances["classification"] == "true_positive")
         & instances["matched_pred_z_span"].notna()
-    ]
-    gt_z_span = gt["bbox_max_z"] - gt["bbox_min_z"]
-    return gt[(gt["matched_pred_z_span"] == 1) & (gt_z_span >= 3)]
+    ].copy()
+    gt["_gt_z_span"] = gt["bbox_max_z"] - gt["bbox_min_z"]
+    return gt[
+        (gt["_gt_z_span"] >= Z_DISCONTINUITY_MIN_GT_Z_SPAN)
+        & (gt["matched_pred_z_span"] <= gt["_gt_z_span"] * Z_DISCONTINUITY_COVERAGE_RATIO)
+    ].drop(columns=["_gt_z_span"])
 
 
 def _select_missing_gt_candidates(instances: pd.DataFrame) -> pd.DataFrame:

@@ -5,7 +5,8 @@ redesign it now follows), covering:
 1. filter selection is reproducible
 2. sampling (which single candidate gets picked) is reproducible for a
    fixed seed
-3. z_discontinuity boundary (GT Z-span >= 3, matched prediction Z-span == 1)
+3. z_discontinuity boundary (GT Z-span >= 3, matched prediction Z-span at
+   most Z_DISCONTINUITY_COVERAGE_RATIO of the GT's Z-span)
 4. missing_gt_annotation boundary (background_contrast_sigma >= 2.0)
 5. intensity-window consistency (one shared vmin/vmax per figure)
 6. a missing pattern degrades gracefully (warns, doesn't error, the other
@@ -25,6 +26,8 @@ import tifffile
 
 from segdiag.checks.representative_case_gallery import (
     FIXED_CROP_SIZE,
+    Z_DISCONTINUITY_COVERAGE_RATIO,
+    Z_DISCONTINUITY_MIN_GT_Z_SPAN,
     RepresentativeCaseGalleryCheck,
     _crop_fixed_window,
     _pick_and_load,
@@ -182,26 +185,57 @@ def test_background_noise_selects_only_noise_fp_predictions():
 # --- 3. z_discontinuity boundary --------------------------------------------
 
 
-def test_z_discontinuity_selects_z_span_3_but_not_z_span_2():
+def test_z_discontinuity_coverage_ratio_constants_are_what_the_tests_below_assume():
+    """Pin the current threshold values - a deliberate change to either
+    constant should force an update here (and in the boundary math below),
+    not silently drift.
+    """
+    assert Z_DISCONTINUITY_COVERAGE_RATIO == 0.3
+    assert Z_DISCONTINUITY_MIN_GT_Z_SPAN == 3
+
+
+def test_z_discontinuity_selects_by_coverage_ratio_not_a_hard_span_of_one():
+    """Regression for switching from the original spec's hard
+    ``matched_pred_z_span == 1`` to a proportional rule: a real trained
+    model's matched (TP) predictions essentially never come out exactly
+    1-slice-thick in 3D (confirmed on an actual dataset - see
+    Z_DISCONTINUITY_COVERAGE_RATIO's docstring), so the literal rule always
+    yielded zero candidates. GT Z-span 10, ratio 0.3 -> boundary at
+    matched_pred_z_span == 3 (inclusive).
+    """
     instances = _instances(
         [
-            # GT Z-span == 3 (>=3, qualifies), matched prediction Z-span == 1.
-            _row(instance_id=1, bbox_min_z=0, bbox_max_z=3, matched_pred_z_span=1),
-            # GT Z-span == 2 (< 3, does not qualify) - the exact "one below
-            # the boundary" case section 7 item 3 calls for.
-            _row(instance_id=2, bbox_min_z=0, bbox_max_z=2, matched_pred_z_span=1),
-            # GT Z-span == 3 but the matched prediction itself spans >1 slice
-            # - not a discontinuity, must not be selected.
-            _row(instance_id=3, bbox_min_z=0, bbox_max_z=3, matched_pred_z_span=2),
+            # matched/GT ratio exactly 3/10 == 0.3 - inclusive boundary, qualifies.
+            _row(instance_id=1, bbox_min_z=0, bbox_max_z=10, matched_pred_z_span=3),
+            # matched/GT ratio 4/10 == 0.4 - just over the boundary, excluded.
+            _row(instance_id=2, bbox_min_z=0, bbox_max_z=10, matched_pred_z_span=4),
+            # GT Z-span 2 (< Z_DISCONTINUITY_MIN_GT_Z_SPAN=3) - even a
+            # generous ratio (1/2 == 0.5) doesn't count on a cell this short.
+            _row(instance_id=3, bbox_min_z=0, bbox_max_z=2, matched_pred_z_span=1),
             # Not a strict match at all - irrelevant regardless of spans.
             _row(
                 instance_id=4,
                 classification="merged_fn",
                 bbox_min_z=0,
-                bbox_max_z=5,
+                bbox_max_z=14,
                 matched_pred_z_span=None,
             ),
+            # matched_pred_z_span missing (NaN) despite an otherwise-TP row
+            # with a tall GT - excluded, can't compute a ratio.
+            _row(instance_id=5, bbox_min_z=0, bbox_max_z=14, matched_pred_z_span=None),
         ]
+    )
+    selected = _select_candidates(instances, "z_discontinuity")
+    assert list(selected["instance_id"]) == [1]
+
+
+def test_z_discontinuity_matches_the_real_data_case_that_motivated_the_ratio_switch():
+    """The exact shape of case the diagnosis surfaced: a GT cell spanning
+    14 slices, matched by a prediction spanning only 3 - a real
+    Z-underestimation the original literal ``== 1`` rule could never select.
+    """
+    instances = _instances(
+        [_row(instance_id=1, bbox_min_z=0, bbox_max_z=14, matched_pred_z_span=3)]
     )
     selected = _select_candidates(instances, "z_discontinuity")
     assert list(selected["instance_id"]) == [1]
@@ -446,14 +480,17 @@ def _build_gallery_dataset(root) -> None:
     pr = np.zeros((num_z, *shape), dtype=np.uint8)
     raw = rng.normal(background_mean, 1.0, (num_z, *shape)).astype(np.float32)
 
-    # z_discontinuity: GT spans z=1..3 (a 10x10 blob at z=2, plus single
-    # "trailing" voxels at z=1/z=3 that extend the bbox without adding much
-    # volume), matched almost exactly by a prediction confined to z=2 alone.
+    # z_discontinuity: GT spans all 5 z-slices (a 10x10 blob at z=2, plus
+    # single "trailing" voxels at z=0/1/3/4 that extend the bbox without
+    # adding much volume: GT z-span=5), matched by a prediction confined to
+    # z=2 alone (matched z-span=1, ratio 1/5=0.2 <= Z_DISCONTINUITY_COVERAGE_RATIO).
     # Centered at z=2 so the Z-2..Z+2 context window (z=0..4) fits inside
     # this dataset's 5 slices.
     gt[2, 10:20, 10:20] = 1
+    gt[0, 15, 15] = 1
     gt[1, 15, 15] = 1
     gt[3, 15, 15] = 1
+    gt[4, 15, 15] = 1
     pr[2, 10:20, 10:20] = 1
 
     # contour_underestimate: two 10x10 squares offset by 3 columns -> IoU =
@@ -579,8 +616,10 @@ def test_representative_case_gallery_check_degrades_gracefully_when_one_pattern_
     dark = np.full((num_z, *shape), 5.0, dtype=np.float32)
 
     gt[2, 10:20, 10:20] = 1
+    gt[0, 15, 15] = 1
     gt[1, 15, 15] = 1
     gt[3, 15, 15] = 1
+    gt[4, 15, 15] = 1
     pr[2, 10:20, 10:20] = 1
 
     gt[0, 50:60, 50:60] = 1
@@ -652,15 +691,19 @@ def test_representative_case_gallery_check_falls_back_past_an_edge_candidate_for
     dark = np.full((num_z, *shape), 5.0, dtype=np.float32)
 
     # Candidate 1 (unrenderable): centered at z=1, which is < 2 - too close
-    # to the z=0 edge for a Z-2..Z+2 window.
+    # to the z=0 edge for a Z-2..Z+2 window. GT z-span=4 (z=0..3), matched
+    # z-span=1 (z=1 only) -> ratio 0.25 <= Z_DISCONTINUITY_COVERAGE_RATIO.
     gt[1, 10:20, 10:20] = 1
     gt[0, 15, 15] = 1
     gt[2, 15, 15] = 1
+    gt[3, 15, 15] = 1
     pr[1, 10:20, 10:20] = 1
 
     # Candidate 2 (renderable): centered at z=4, the last index with room
-    # for a full Z-2..Z+2 window in a 7-slice volume (z=2..6).
+    # for a full Z-2..Z+2 window in a 7-slice volume (z=2..6). GT z-span=4
+    # (z=2..5), matched z-span=1 (z=4 only) -> same 0.25 ratio.
     gt[4, 50:60, 50:60] = 1
+    gt[2, 55, 55] = 1
     gt[3, 55, 55] = 1
     gt[5, 55, 55] = 1
     pr[4, 50:60, 50:60] = 1
