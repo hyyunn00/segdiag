@@ -58,10 +58,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `z_min`/`z_max` from the original spec were **not** added as new
     fields - `InstanceRecord` already had equivalent `bbox_min_z`/
     `bbox_max_z` (half-open, like its other bbox fields), reused directly.
-  - New CLI flags (this check only): `--gallery-seed` (default `42`,
-    decides which single candidate each pattern's pool yields),
+  - New CLI flags (this check only): `--gallery-seed` (default `42`, fixes
+    the attempt order for each pattern's candidate pool),
     `--intensity-vmin`/`--intensity-vmax` (per-figure override),
     `--voxel-size-um` (default `1.82`, drives the scale bar).
+  - `_pick_and_load()`: rendering tries every candidate in a pattern's pool,
+    in fixed-seed order, and uses the first one that actually loads,
+    instead of committing to a single `n=1` sample and silently dropping
+    the whole pattern/panel if that one candidate turns out unrenderable
+    (stale parquet cache vs. current on-disk files, missing raw/dark/
+    prediction TIFFs, or - `z_discontinuity` only - sitting too close to
+    its sample's volume edge for a full Z-2..Z+2 window). Logs the specific
+    reason for each skipped candidate, and again if every candidate in a
+    pool fails. The seed still fully determines the outcome (same seed ->
+    same result every time); this is a reproducible fallback through the
+    pool, not a random retry.
 
 ### Fixed
 - **`fn-visualize` ignored `--model-exact`**: unlike every other check, this

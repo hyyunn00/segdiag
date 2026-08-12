@@ -49,7 +49,7 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, TypeVar
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -182,6 +182,66 @@ def _sample_cases(candidates: pd.DataFrame, pattern: str, n: int, seed: int) -> 
     return candidates.sample(n=n, random_state=seed)
 
 
+_Loaded = TypeVar("_Loaded")
+
+
+def _pick_and_load(
+    candidates: pd.DataFrame,
+    pattern: str,
+    seed: int,
+    folders_for: Callable[[str, str], Optional[_ResolvedFolders]],
+    loader: Callable[[pd.Series, _ResolvedFolders], Optional[_Loaded]],
+) -> Tuple[Optional[pd.Series], Optional[_Loaded]]:
+    """Try every candidate for ``pattern``, in one fixed-seed shuffled order
+    (:func:`_sample_cases` with ``n=len(candidates)`` - a full, seed-
+    determined permutation of the pool, not a fresh random draw per
+    attempt), and return the first ``(case, loaded)`` pair whose images
+    actually load from disk.
+
+    One candidate being unrenderable (stale parquet cache vs. current
+    on-disk files, missing raw/dark/prediction TIFFs, or - for
+    ``z_discontinuity`` - sitting too close to its sample's volume edge for
+    a full Z-2..Z+2 window) no longer silently drops the whole pattern when
+    a *different* candidate in the same pool would have worked; the caller
+    used to have to notice the failure and manually retry with a different
+    ``--gallery-seed``. The seed still fully determines the attempt order,
+    so a given seed always produces the same outcome - this isn't a random
+    retry loop, it's "try the whole pool, in a reproducible order."
+
+    Returns ``(None, None)`` if the pool is empty or every candidate in it
+    failed to load.
+    """
+    ordered = _sample_cases(candidates, pattern, n=len(candidates), seed=seed)
+    attempts = 0
+    for _, case in ordered.iterrows():
+        attempts += 1
+        folders = folders_for(case["sample"], case["model"])
+        if folders is None:
+            continue
+        loaded = loader(case, folders)
+        if loaded is not None:
+            if attempts > 1:
+                logger.info(
+                    "pattern=%s: candidate #%d of %d (in seed=%d order) rendered - the "
+                    "first %d failed (see preceding warnings) and were skipped.",
+                    pattern,
+                    attempts,
+                    len(ordered),
+                    seed,
+                    attempts - 1,
+                )
+            return case, loaded
+    if attempts:
+        logger.warning(
+            "pattern=%s: tried all %d candidate(s) in the pool (seed=%d), none could be "
+            "rendered.",
+            pattern,
+            attempts,
+            seed,
+        )
+    return None, None
+
+
 def _resolve_intensity_window(
     raw_arrays: List[np.ndarray], vmin: Optional[float], vmax: Optional[float]
 ) -> Tuple[float, float]:
@@ -307,11 +367,9 @@ def _load_panel_b_case_images(
         return None
     if z_idx < 2 or z_idx > len(gt_files) - 3:
         logger.warning(
-            "Panel B: the z_discontinuity candidate's center slice (z_index=%d of %d) is too "
-            "close to this sample's volume edge for a full Z-2..Z+2 context window - no other "
-            "z_discontinuity candidate was sampled to fall back to (--gallery-seed only "
-            "controls *which* candidate gets picked within one run, it doesn't retry others "
-            "on failure).",
+            "Panel B: this z_discontinuity candidate's center slice (z_index=%d of %d) is "
+            "too close to its sample's volume edge for a full Z-2..Z+2 context window - "
+            "trying the next candidate in the pool (if any; see _pick_and_load).",
             z_idx,
             len(gt_files),
         )
@@ -461,22 +519,35 @@ class RepresentativeCaseGalleryCheck(Check):
         def _folders_for(sample: str, model: str) -> Optional[_ResolvedFolders]:
             key = (sample, model)
             if key not in folder_cache:
-                folder_cache[key] = self._resolve_folders(
+                resolved = self._resolve_folders(
                     root, sample, model, mask_name, raw_name, dark_name
                 )
+                if resolved is None:
+                    logger.warning(
+                        "Couldn't resolve GT/raw/dark/prediction folders on disk for "
+                        "(sample=%s, model=%s) - check --mask-name/--raw-name/--dark-name "
+                        "match this sample's actual folder names, and that a dark folder "
+                        "exists (folder resolution requires one even for patterns/panels "
+                        "that don't render it). Logged once per (sample, model) pair.",
+                        sample,
+                        model,
+                    )
+                folder_cache[key] = resolved
             return folder_cache[key]
 
-        # Exactly one case per pattern - the whole point of this figure
-        # design is a single, defensible example per defect type, not a
-        # sampled gallery of several.
+        # Exactly one case rendered per pattern - the whole point of this
+        # figure design is a single, defensible example per defect type, not
+        # a sampled gallery of several. Candidate pools themselves are kept
+        # in full (not pre-trimmed to one row) so `_pick_and_load` below can
+        # fall back through the rest of a pool, in fixed-seed order, if its
+        # first choice turns out to be unrenderable.
         candidate_counts: Dict[str, int] = {}
-        picked_cases: Dict[str, Optional[pd.Series]] = {}
+        candidates_by_pattern: Dict[str, pd.DataFrame] = {}
         for pattern in PATTERNS:
             candidates = _select_candidates(instances, pattern)
             candidate_counts[pattern] = len(candidates)
             logger.info("pattern=%s candidate_count=%d", pattern, len(candidates))
-            sampled = _sample_cases(candidates, pattern, n=1, seed=seed)
-            picked_cases[pattern] = sampled.iloc[0] if not sampled.empty else None
+            candidates_by_pattern[pattern] = candidates
 
         artifacts: List[ReportArtifact] = []
 
@@ -486,14 +557,14 @@ class RepresentativeCaseGalleryCheck(Check):
         panel_a_raw: List[np.ndarray] = []
         panel_a_dark: List[np.ndarray] = []
         for pattern in _PANEL_A_PATTERNS:
-            case = picked_cases.get(pattern)
-            if case is None:
-                continue
-            folders = _folders_for(case["sample"], case["model"])
-            if folders is None:
-                continue
-            imgs = _load_panel_a_case_images(case, folders)
-            if imgs is None:
+            case, imgs = _pick_and_load(
+                candidates_by_pattern[pattern],
+                pattern,
+                seed,
+                _folders_for,
+                _load_panel_a_case_images,
+            )
+            if case is None or imgs is None:
                 continue
             panel_a_loaded[pattern] = imgs
             panel_a_cases.append(case)
@@ -543,51 +614,42 @@ class RepresentativeCaseGalleryCheck(Check):
             logger.warning("Panel A: no renderable case found for any of %s", _PANEL_A_PATTERNS)
 
         # --- Panel B: z_discontinuity's Z-context ---------------------------
-        z_case = picked_cases.get("z_discontinuity")
+        z_case, sample_data = _pick_and_load(
+            candidates_by_pattern["z_discontinuity"],
+            "z_discontinuity",
+            seed,
+            _folders_for,
+            _load_panel_b_case_images,
+        )
         panel_b_rendered = False
-        if z_case is not None:
-            folders = _folders_for(z_case["sample"], z_case["model"])
-            if folders is None:
-                logger.warning(
-                    "Panel B: couldn't resolve GT/raw/dark/prediction folders on disk for "
-                    "the z_discontinuity candidate's (sample=%s, model=%s) - check "
-                    "--mask-name/--raw-name/--dark-name match this sample's actual folder "
-                    "names, and that a dark folder exists (folder resolution requires one "
-                    "even though Panel B doesn't render it).",
-                    z_case["sample"],
-                    z_case["model"],
-                )
-            sample_data = (
-                _load_panel_b_case_images(z_case, folders) if folders is not None else None
+        if z_case is not None and sample_data is not None:
+            vmin_b, vmax_b = _resolve_intensity_window(sample_data["raw"], cli_vmin, cli_vmax)
+            logger.info(
+                "representative-case-gallery Panel B: shared intensity window "
+                "vmin=%.3f vmax=%.3f (voxel_size_um=%.3f, seed=%d)",
+                vmin_b,
+                vmax_b,
+                voxel_size_um,
+                seed,
             )
-            if sample_data is not None:
-                vmin_b, vmax_b = _resolve_intensity_window(sample_data["raw"], cli_vmin, cli_vmax)
-                logger.info(
-                    "representative-case-gallery Panel B: shared intensity window "
-                    "vmin=%.3f vmax=%.3f (voxel_size_um=%.3f, seed=%d)",
-                    vmin_b,
-                    vmax_b,
-                    voxel_size_um,
-                    seed,
+            fig_b = _render_panel_b(sample_data, vmin_b, vmax_b, voxel_size_um)
+            artifacts.append(
+                ReportArtifact(
+                    name="case_gallery_panel_b_z_discontinuity",
+                    table=z_case.to_frame().T,
+                    figure=fig_b,
+                    metadata={
+                        "pattern": "z_discontinuity",
+                        "seed": seed,
+                        "vmin": vmin_b,
+                        "vmax": vmax_b,
+                        "crop_size": FIXED_CROP_SIZE,
+                    },
                 )
-                fig_b = _render_panel_b(sample_data, vmin_b, vmax_b, voxel_size_um)
-                artifacts.append(
-                    ReportArtifact(
-                        name="case_gallery_panel_b_z_discontinuity",
-                        table=z_case.to_frame().T,
-                        figure=fig_b,
-                        metadata={
-                            "pattern": "z_discontinuity",
-                            "seed": seed,
-                            "vmin": vmin_b,
-                            "vmax": vmax_b,
-                            "crop_size": FIXED_CROP_SIZE,
-                        },
-                    )
-                )
-                panel_b_rendered = True
-        if not panel_b_rendered:
-            logger.warning("Panel B: no renderable case found for z_discontinuity")
+            )
+            panel_b_rendered = True
+        # `_pick_and_load` already logged the specific reason if this stayed
+        # False (empty pool, or every candidate in it failed to load).
 
         # Bookkeeping table: candidate-pool size, seed, and whether a case
         # actually got rendered for every pattern - the numbers a figure

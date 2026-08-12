@@ -27,6 +27,7 @@ from segdiag.checks.representative_case_gallery import (
     FIXED_CROP_SIZE,
     RepresentativeCaseGalleryCheck,
     _crop_fixed_window,
+    _pick_and_load,
     _render_panel_a,
     _resolve_intensity_window,
     _sample_cases,
@@ -265,6 +266,79 @@ def test_sample_cases_handles_a_too_small_candidate_pool_without_erroring():
 def test_sample_cases_returns_empty_when_no_candidates():
     empty = _instances([])
     assert _sample_cases(empty, "no_response", n=1, seed=42).empty
+
+
+# --- retry: fall back through the pool if the first candidate fails to load -
+
+
+def test_pick_and_load_falls_back_to_the_next_candidate_when_the_first_fails():
+    """The key regression this mechanism exists for: a candidate whose
+    images can't actually be loaded (stale cache, missing files, too close
+    to a volume edge...) must not silently drop the whole pattern when a
+    different candidate in the same pool would have worked.
+    """
+    candidates = _instances(
+        [_row(instance_id=1, sample="bad_sample"), _row(instance_id=2, sample="good_sample")]
+    )
+
+    def folders_for(sample, model):
+        return ("gt_dir", "raw_dir", "dark_dir", "pred_dir", [])
+
+    def loader(case, folders):
+        return None if case["sample"] == "bad_sample" else {"raw": [np.zeros((4, 4))]}
+
+    case, loaded = _pick_and_load(
+        candidates, "z_discontinuity", seed=42, folders_for=folders_for, loader=loader
+    )
+
+    assert loaded is not None
+    assert case["sample"] == "good_sample"
+
+
+def test_pick_and_load_is_reproducible_for_a_fixed_seed():
+    candidates = _instances([_row(instance_id=i, sample=f"s{i}") for i in range(10)])
+    calls = []
+
+    def folders_for(sample, model):
+        return ("gt_dir", "raw_dir", "dark_dir", "pred_dir", [])
+
+    def loader(case, folders):
+        calls.append(case["sample"])
+        return {"raw": [np.zeros((4, 4))]}  # first attempt always succeeds
+
+    case_a, _ = _pick_and_load(
+        candidates, "no_response", seed=7, folders_for=folders_for, loader=loader
+    )
+    case_b, _ = _pick_and_load(
+        candidates, "no_response", seed=7, folders_for=folders_for, loader=loader
+    )
+    assert case_a["sample"] == case_b["sample"]
+
+
+def test_pick_and_load_returns_none_when_every_candidate_fails():
+    candidates = _instances([_row(instance_id=1), _row(instance_id=2)])
+    case, loaded = _pick_and_load(
+        candidates,
+        "z_discontinuity",
+        seed=42,
+        folders_for=lambda sample, model: ("gt", "raw", "dark", "pred", []),
+        loader=lambda case, folders: None,
+    )
+    assert case is None
+    assert loaded is None
+
+
+def test_pick_and_load_returns_none_for_an_empty_pool():
+    empty = _instances([])
+    case, loaded = _pick_and_load(
+        empty,
+        "z_discontinuity",
+        seed=42,
+        folders_for=lambda sample, model: None,
+        loader=lambda case, folders: None,
+    )
+    assert case is None
+    assert loaded is None
 
 
 # --- 5. intensity-window consistency ----------------------------------------
@@ -551,6 +625,81 @@ def test_representative_case_gallery_check_degrades_gracefully_when_one_pattern_
     assert len(panel_a.table) == 3  # missing_gt_annotation excluded, three others present
 
     assert by_name["case_gallery_panel_b_z_discontinuity"].figure is not None
+
+
+def test_representative_case_gallery_check_falls_back_past_an_edge_candidate_for_panel_b(tmp_path):
+    """End-to-end version of the retry regression: two genuine
+    z_discontinuity candidates in the same dataset, one centered too close
+    to its sample's volume edge for a full Z-2..Z+2 window (unrenderable)
+    and one safely in the middle (renderable). Panel B must still render,
+    using the renderable one, regardless of which one a given seed tries
+    first.
+    """
+    shape = (300, 300)
+    num_z = 7  # only z_index in [2, num_z-3] = [2, 4] has room for Z-2..Z+2
+    sample_dir = tmp_path / "case01"
+    gt_dir = sample_dir / "Flatten_561_mask"
+    raw_dir = sample_dir / "Flatten_561"
+    dark_dir = sample_dir / "Flatten_561_dark"
+    pred_dir = sample_dir / "Flatten_561_unet_v9_mask.scroll-tif"
+    for d in (gt_dir, raw_dir, dark_dir, pred_dir):
+        d.mkdir(parents=True)
+
+    rng = np.random.default_rng(0)
+    gt = np.zeros((num_z, *shape), dtype=np.uint8)
+    pr = np.zeros((num_z, *shape), dtype=np.uint8)
+    raw = rng.normal(20.0, 1.0, (num_z, *shape)).astype(np.float32)
+    dark = np.full((num_z, *shape), 5.0, dtype=np.float32)
+
+    # Candidate 1 (unrenderable): centered at z=1, which is < 2 - too close
+    # to the z=0 edge for a Z-2..Z+2 window.
+    gt[1, 10:20, 10:20] = 1
+    gt[0, 15, 15] = 1
+    gt[2, 15, 15] = 1
+    pr[1, 10:20, 10:20] = 1
+
+    # Candidate 2 (renderable): centered at z=4, the last index with room
+    # for a full Z-2..Z+2 window in a 7-slice volume (z=2..6).
+    gt[4, 50:60, 50:60] = 1
+    gt[3, 55, 55] = 1
+    gt[5, 55, 55] = 1
+    pr[4, 50:60, 50:60] = 1
+
+    for z in range(num_z):
+        tifffile.imwrite(gt_dir / f"slice_{z:04d}.tif", gt[z])
+        tifffile.imwrite(pred_dir / f"slice_{z:04d}.tif", pr[z])
+        tifffile.imwrite(raw_dir / f"slice_{z:04d}.tif", raw[z])
+        tifffile.imwrite(dark_dir / f"slice_{z:04d}.tif", dark[z])
+
+    instances_df, quality_df = collect(tmp_path)
+    z_candidates = _select_candidates(instances_df, "z_discontinuity")
+    assert len(z_candidates) == 2  # both planted cells qualify as candidates
+
+    args = argparse.Namespace(
+        root=tmp_path,
+        sample=None,
+        model=None,
+        output_dir=tmp_path / "out",
+        mask_name=None,
+        raw_name=None,
+        dark_name="Flatten_561_dark",
+        gallery_seed=42,
+        intensity_vmin=None,
+        intensity_vmax=None,
+        voxel_size_um=1.82,
+    )
+
+    artifacts = RepresentativeCaseGalleryCheck().run(instances_df, quality_df, args)
+    by_name = {a.name: a for a in artifacts}
+
+    panel_b = by_name["case_gallery_panel_b_z_discontinuity"]
+    assert panel_b.figure is not None
+    assert int(panel_b.table.iloc[0]["z_index"]) == 4  # the renderable candidate, not z=1
+
+    summary = by_name["case_gallery_sampling_summary"].table
+    z_row = summary[summary["pattern"] == "z_discontinuity"].iloc[0]
+    assert z_row["candidate_count"] == 2
+    assert z_row["sampled_count"] == 1
 
 
 def test_representative_case_gallery_check_returns_empty_when_no_instances():

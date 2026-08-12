@@ -134,11 +134,18 @@ overridable by `--intensity-vmin`/`--intensity-vmax`) instead of reusing
 Raw's - Dark is a different imaging channel with its own intensity range,
 and stretching it through Raw's window blows it out.
 
-`--gallery-seed` (default `42`) picks which single candidate gets sampled
-out of each pattern's pool (`pandas.DataFrame.sample(random_state=seed)` -
-deliberately not the global `random` module `fn-visualize` uses, so
-repeated calls never interfere with each other's draws). `--voxel-size-um`
-(default `1.82`) drives the scale bar's pixel length.
+`--gallery-seed` (default `42`) fixes the attempt order for each pattern's
+candidate pool (`pandas.DataFrame.sample(random_state=seed)` - deliberately
+not the global `random` module `fn-visualize` uses, so repeated calls never
+interfere with each other's draws). Rendering tries every candidate in that
+pool, in seed order, and uses the **first one that actually loads** - a
+candidate whose recorded slice no longer matches on-disk files (stale
+cache), is missing raw/dark/prediction TIFFs, or (for `z_discontinuity`)
+sits too close to its sample's volume edge for a full Z-2..Z+2 window, is
+skipped in favor of the next one in the pool instead of silently dropping
+the whole pattern/panel. A warning is logged for each skipped candidate
+(with the specific reason) and again if every candidate in a pool fails.
+`--voxel-size-um` (default `1.82`) drives the scale bar's pixel length.
 
 Two fields feed this check that don't exist for any other purpose:
 `InstanceRecord.matched_pred_z_span` (a matched GT row's claiming
